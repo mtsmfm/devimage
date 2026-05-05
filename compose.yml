@@ -1,0 +1,25 @@
+# Run with: docker compose up
+#
+# Drop `gpus: all` and set SELKIES_ENCODER=x264enc to run without an NVIDIA
+# GPU (slower software encoding).
+
+services:
+  devimage:
+    image: ghcr.io/mtsmfm/devimage:latest
+    container_name: devimage
+    ports:
+      - "8080:8080"
+    environment:
+      SELKIES_BASIC_AUTH_PASSWORD: "${DEVIMAGE_PASSWORD:-changeme}"
+      # SELKIES_ENCODER: "x264enc"   # uncomment if no GPU
+    volumes:
+      - "${PWD}:/workspace"
+      - "${HOME}/.claude:/home/ubuntu/.claude"
+      - "${HOME}/.claude.json:/home/ubuntu/.claude.json"
+      - "${HOME}/.codex:/home/ubuntu/.codex"
+    # KDE / GStreamer want generous shared memory for the framebuffer.
+    shm_size: "1gb"
+    # Selkies sometimes needs IPC to talk to host PulseAudio etc.
+    ipc: host
+    # NVIDIA GPU passthrough; drop this line for CPU-only.
+    gpus: all

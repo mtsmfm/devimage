@@ -36,6 +36,14 @@ Then open <http://localhost:8080> and log in as `ubuntu` / `changeme`.
 
 The default working directory is `/workspace` — that's where your bind-mounted repo will be, and where `docker exec ... <cmd>` lands too. The `~/.claude` and `~/.codex` mounts persist agent login state across runs; drop them if you don't need it.
 
+### Or via Docker Compose
+
+```bash
+DEVIMAGE_PASSWORD=changeme docker compose up
+```
+
+The bundled [`compose.yml`](compose.yml) wires up the same mounts, ports, and GPU passthrough. Drop the `gpus: all` line and uncomment `SELKIES_ENCODER=x264enc` for CPU-only.
+
 ### Without an NVIDIA GPU
 
 Drop `--gpus all` and force a software encoder:
