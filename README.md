@@ -27,6 +27,7 @@ docker run --rm -it \
   -e SELKIES_BASIC_AUTH_PASSWORD=changeme \
   -v "$PWD:/workspace" \
   -v "$HOME/.claude:/home/ubuntu/.claude" \
+  -v "$HOME/.claude.json:/home/ubuntu/.claude.json" \
   -v "$HOME/.codex:/home/ubuntu/.codex" \
   ghcr.io/mtsmfm/devimage:latest
 ```
