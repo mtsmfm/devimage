@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Register the bundled MCP servers (Blender, FreeCAD) with whichever coding
+# agent CLIs are installed in the current environment.
+#
+# Run this after installing claude / codex (or another agent), and any time
+# the agent config gets reset (e.g. after a fresh bind mount of ~/.claude or
+# ~/.codex from the host). Idempotent: re-runs are no-ops for entries that
+# already exist.
+
+set -u
+
+claude_register() {
+  local name=$1 cmd=$2
+  if claude mcp add --scope user "$name" -- "$cmd" >/dev/null 2>&1; then
+    echo "claude: registered $name -> $cmd"
+  else
+    echo "claude: $name already registered"
+  fi
+}
+
+codex_register() {
+  local name=$1 cmd=$2
+  if codex mcp add "$name" -- "$cmd" >/dev/null 2>&1; then
+    echo "codex:  registered $name -> $cmd"
+  else
+    echo "codex:  $name already registered"
+  fi
+}
+
+if command -v claude >/dev/null 2>&1; then
+  claude_register blender /usr/local/bin/blender-mcp
+  claude_register freecad /usr/local/bin/freecad-mcp
+else
+  echo "claude: not installed, skipping (try: mise use -g claude)"
+fi
+
+if command -v codex >/dev/null 2>&1; then
+  codex_register blender /usr/local/bin/blender-mcp
+  codex_register freecad /usr/local/bin/freecad-mcp
+else
+  echo "codex:  not installed, skipping (try: mise use -g codex)"
+fi
