@@ -153,7 +153,7 @@ dpkg --add-architecture i386
 
 apt_packages=(
     # Core dev tools, TLS, transport
-    git curl wget ca-certificates gnupg openssh-client
+    git curl wget ca-certificates gnupg openssh-client rsync direnv
 
     # Archive handling
     unzip zip xz-utils
@@ -297,6 +297,7 @@ for shell in bash zsh; do
     {
         echo 'export PATH="$HOME/.local/share/mise/shims:$PATH"'
         echo "eval \"\$(/usr/local/bin/mise activate ${shell})\""
+        echo "eval \"\$(/usr/bin/direnv hook ${shell})\""
     } >> "$HOME/.${shell}rc"
 done
 
