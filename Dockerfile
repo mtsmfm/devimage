@@ -245,8 +245,46 @@ COPY --from=mise-fetch /out /usr/local/bin/mise
 COPY --from=freecad-mcp-fetch --chown=${USERNAME}:${USERNAME} \
       /out /home/${USERNAME}/.local/share/FreeCAD/Mod/FreeCADMCP
 
-# Helper that registers MCP servers with both agents post-mount.
-COPY --chmod=0755 scripts/setup-mcp /usr/local/bin/setup-mcp
+COPY --chmod=0755 scripts/devimage-gui /usr/local/bin/devimage-gui
+COPY --chmod=0755 scripts/devimage-mcp /usr/local/bin/devimage-mcp
+COPY --chmod=0755 scripts/devimage-supervisor-command /usr/local/bin/devimage-supervisor-command
+
+# On-demand GUI startup. The base image starts the GUI stack from
+# supervisord unconditionally; wrap those commands so a normal container boots
+# headless and an agent can opt into Xvfb/KDE/Selkies only when needed.
+RUN <<'EOF'
+set -euo pipefail
+
+replace_command() {
+  local section="$1"
+  local command="$2"
+  local tmp
+  tmp="$(mktemp)"
+  awk -v section="[${section}]" -v command="${command}" '
+    $0 == section { in_section = 1; print; next }
+    /^\[/ { in_section = 0 }
+    in_section && /^command=/ { print command; next }
+    { print }
+  ' /etc/supervisord.conf > "${tmp}"
+  cat "${tmp}" > /etc/supervisord.conf
+  rm -f "${tmp}"
+}
+
+replace_command 'program:entrypoint' \
+  'command=/usr/local/bin/devimage-supervisor-command gui'
+replace_command 'program:selkies-gstreamer' \
+  'command=/usr/local/bin/devimage-supervisor-command selkies'
+replace_command 'program:kasmvnc' \
+  'command=/usr/local/bin/devimage-supervisor-command kasmvnc'
+replace_command 'program:nginx' \
+  'command=/usr/local/bin/devimage-supervisor-command nginx'
+replace_command 'program:pipewire' \
+  'command=/usr/local/bin/devimage-supervisor-command pipewire'
+replace_command 'program:wireplumber' \
+  'command=/usr/local/bin/devimage-supervisor-command wireplumber'
+replace_command 'program:pipewire-pulse' \
+  'command=/usr/local/bin/devimage-supervisor-command pipewire-pulse'
+EOF
 
 # MCP server CLIs (Python). pipx system-wide so /usr/local/bin/* is universal.
 RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install blender-mcp \

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="/tmp/devimage"
+gui_enabled_file="${state_dir}/gui-enabled"
+programs=(entrypoint selkies-gstreamer kasmvnc nginx pipewire wireplumber pipewire-pulse)
+
+supervisorctl_cmd() {
+  if [ -S /tmp/supervisor.sock ] && [ -w /tmp/supervisor.sock ]; then
+    supervisorctl -c /etc/supervisord.conf "$@"
+  else
+    sudo supervisorctl -c /etc/supervisord.conf "$@"
+  fi
+}
+
+start_programs() {
+  local program state
+  for program in "${programs[@]}"; do
+    state="$(supervisorctl_cmd status "${program}" 2>/dev/null | awk '{print $2}' || true)"
+    case "${state}" in
+      ""|STOPPED|EXITED|FATAL|UNKNOWN)
+        supervisorctl_cmd start "${program}" >/dev/null || true
+        ;;
+    esac
+  done
+}
+
+case "${1:-status}" in
+  start)
+    mkdir -p "${state_dir}"
+    touch "${gui_enabled_file}"
+    start_programs
+    echo "devimage: GUI stack requested"
+    supervisorctl_cmd status "${programs[@]}"
+    ;;
+  stop)
+    rm -f "${gui_enabled_file}"
+    for program in nginx selkies-gstreamer kasmvnc pipewire-pulse wireplumber pipewire entrypoint; do
+      supervisorctl_cmd stop "${program}" >/dev/null || true
+    done
+    echo "devimage: GUI stack stopped"
+    ;;
+  status)
+    if [ -e "${gui_enabled_file}" ]; then
+      echo "devimage: GUI requested"
+    else
+      echo "devimage: GUI not requested"
+    fi
+    supervisorctl_cmd status "${programs[@]}"
+    ;;
+  *)
+    echo "usage: devimage-gui start|stop|status" >&2
+    exit 2
+    ;;
+esac

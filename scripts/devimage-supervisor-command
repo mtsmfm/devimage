@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="/tmp/devimage"
+gui_enabled_file="${state_dir}/gui-enabled"
+
+is_true() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+gui_enabled() {
+  is_true "${DEVIMAGE_ENABLE_GUI:-}" || [ -e "${gui_enabled_file}" ]
+}
+
+gui_disabled() {
+  is_true "${DEVIMAGE_DISABLE_GUI:-}"
+}
+
+selkies_disabled() {
+  is_true "${DEVIMAGE_DISABLE_SELKIES:-}" || is_true "${DEVIMAGE_DISABLE_WEBRTC:-}"
+}
+
+wait_for_gui_enable() {
+  local service="$1"
+
+  if gui_disabled; then
+    echo "devimage: ${service} disabled by DEVIMAGE_DISABLE_GUI"
+    exec sleep infinity
+  fi
+
+  if ! gui_enabled; then
+    mkdir -p "${state_dir}"
+    echo "devimage: ${service} waiting; run 'devimage-gui start' to launch the GUI stack"
+    until gui_enabled; do
+      sleep 2
+    done
+  fi
+}
+
+service="${1:?service name required}"
+
+case "${service}" in
+  gui)
+    wait_for_gui_enable "${service}"
+    exec bash -c "dbus-run-session -- /etc/entrypoint.sh"
+    ;;
+  selkies|kasmvnc|nginx)
+    if selkies_disabled; then
+      echo "devimage: ${service} disabled by DEVIMAGE_DISABLE_SELKIES/DEVIMAGE_DISABLE_WEBRTC"
+      exec sleep infinity
+    fi
+    wait_for_gui_enable "${service}"
+    case "${service}" in
+      selkies)
+        if [ "$(printf '%s' "${KASMVNC_ENABLE:-}" | tr '[:upper:]' '[:lower:]')" != "true" ]; then
+          exec /etc/selkies-gstreamer-entrypoint.sh
+        fi
+        ;;
+      kasmvnc)
+        if [ "$(printf '%s' "${KASMVNC_ENABLE:-}" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+          exec /etc/kasmvnc-entrypoint.sh
+        fi
+        ;;
+      nginx)
+        exec bash -c 'until nc -z localhost ${SELKIES_PORT:-8081}; do sleep 0.5; done; /usr/sbin/nginx -g "daemon off;"'
+        ;;
+    esac
+    exec sleep infinity
+    ;;
+  pipewire)
+    wait_for_gui_enable "${service}"
+    exec bash -c 'until [ -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]; do sleep 0.5; done; dbus-run-session -- /usr/bin/pipewire'
+    ;;
+  wireplumber)
+    wait_for_gui_enable "${service}"
+    exec bash -c 'until [ "$(echo ${XDG_RUNTIME_DIR}/pipewire-*.lock)" != "${XDG_RUNTIME_DIR}/pipewire-*.lock" ]; do sleep 0.5; done; dbus-run-session -- /usr/bin/wireplumber'
+    ;;
+  pipewire-pulse)
+    wait_for_gui_enable "${service}"
+    exec bash -c 'until [ "$(echo ${XDG_RUNTIME_DIR}/pipewire-*.lock)" != "${XDG_RUNTIME_DIR}/pipewire-*.lock" ]; do sleep 0.5; done; dbus-run-session -- /usr/bin/pipewire-pulse'
+    ;;
+  *)
+    echo "devimage: unknown supervisor service '${service}'" >&2
+    exit 2
+    ;;
+esac
