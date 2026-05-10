@@ -99,13 +99,6 @@ RUN curl -fsSL -o /out \
 FROM dl-base AS mise-fetch
 RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/out sh
 
-# Parsec — vendor-distributed .deb (no apt repo). apt resolves runtime deps
-# (libsdl2, libegl1, etc.) when this is installed in the consolidated apt step.
-FROM dl-base AS parsec-fetch
-RUN mkdir /out \
- && curl -fsSL -o /out/parsec-linux.deb \
-      https://builds.parsec.app/package/parsec-linux.deb
-
 # ============================================================================
 # Final image
 # ============================================================================
@@ -124,7 +117,6 @@ SHELL ["/bin/bash", "-c"]
 # grouped inline so the rationale survives future edits.
 # ----------------------------------------------------------------------------
 COPY --from=selkies-fetch /out /tmp/selkies/
-COPY --from=parsec-fetch /out /tmp/parsec/
 RUN <<'EOF'
 set -euo pipefail
 
@@ -198,11 +190,6 @@ apt-get install -y --install-recommends winehq-stable
 # Selkies js-interposer .deb (downloaded in selkies-fetch); apt resolves its
 # deps and ties it into the same dpkg state as the rest.
 apt-get install -y --no-install-recommends /tmp/selkies/selkies-js-interposer_*.deb
-
-# Parsec .deb (downloaded in parsec-fetch); apt resolves its runtime deps.
-# Allow Recommends so optional libs (audio/input) come along.
-apt-get install -y /tmp/parsec/parsec-linux.deb
-rm -rf /tmp/parsec
 
 locale-gen en_US.UTF-8
 ln -s "$(command -v fdfind)" /usr/local/bin/fd
