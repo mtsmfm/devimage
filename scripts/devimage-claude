@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Run Claude Code unattended via mise — no `mise use -g claude` required;
+# `mise exec` installs/uses the latest published version on first call.
+set -euo pipefail
+exec mise exec claude@latest -- claude --dangerously-skip-permissions "$@"

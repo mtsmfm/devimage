@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run OpenAI Codex CLI unattended via mise — no `mise use -g codex` required;
+# `mise exec` installs/uses the latest published version on first call.
+# --dangerously-bypass-approvals-and-sandbox is the codex-side equivalent of
+# claude's --dangerously-skip-permissions.
+set -euo pipefail
+exec mise exec codex@latest -- codex --dangerously-bypass-approvals-and-sandbox "$@"

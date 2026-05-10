@@ -167,6 +167,9 @@ apt_packages=(
     # GUI automation primitives (drive desktop, take screenshots, clipboard)
     xdotool wmctrl scrot xclip
 
+    # Media swiss-army knife (transcode, capture, probe)
+    ffmpeg
+
     # Shell stack
     zsh sudo locales man-db bash-completion
 
@@ -248,6 +251,8 @@ COPY --from=freecad-mcp-fetch --chown=${USERNAME}:${USERNAME} \
 COPY --chmod=0755 scripts/devimage-gui /usr/local/bin/devimage-gui
 COPY --chmod=0755 scripts/devimage-mcp /usr/local/bin/devimage-mcp
 COPY --chmod=0755 scripts/devimage-supervisor-command /usr/local/bin/devimage-supervisor-command
+COPY --chmod=0755 scripts/devimage-claude /usr/local/bin/devimage-claude
+COPY --chmod=0755 scripts/devimage-codex /usr/local/bin/devimage-codex
 
 # On-demand GUI startup. The base image starts the GUI stack from
 # supervisord unconditionally; wrap those commands so a normal container boots
