@@ -13,11 +13,20 @@ services:
       SELKIES_BASIC_AUTH_PASSWORD: "${DEVIMAGE_PASSWORD:-changeme}"
       # DEVIMAGE_ENABLE_GUI: "true"  # start Xvfb/KDE/Selkies at boot
       # SELKIES_ENCODER: "x264enc"   # uncomment if no GPU
+      # On WSL2: route OpenGL through Mesa's d3d12 driver so Blender's
+      # viewport (and other GL apps) reach the Windows GPU instead of falling
+      # back to llvmpipe. Pair with the /usr/lib/wsl mount below. See README.
+      # LD_LIBRARY_PATH: "/usr/lib/wsl/lib"
+      # GALLIUM_DRIVER: "d3d12"
+      # MESA_D3D12_DEFAULT_ADAPTER_NAME: "NVIDIA"
     volumes:
       - "${PWD}:/workspace"
       - "${HOME}/.claude:/home/ubuntu/.claude"
       - "${HOME}/.claude.json:/home/ubuntu/.claude.json"
       - "${HOME}/.codex:/home/ubuntu/.codex"
+      # On WSL2: ships libdxcore / libd3d12 / libd3d12core to the container
+      # so Mesa's d3d12 driver can talk to the WDDM GPU. See env block above.
+      # - "/usr/lib/wsl:/usr/lib/wsl:ro"
     # KDE / GStreamer want generous shared memory for the framebuffer.
     shm_size: "1gb"
     # Selkies sometimes needs IPC to talk to host PulseAudio etc.

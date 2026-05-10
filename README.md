@@ -66,6 +66,25 @@ docker run --rm -it \
   ghcr.io/mtsmfm/devimage:latest
 ```
 
+### On WSL2 (NVIDIA GPU)
+
+`--gpus all` from inside a WSL2 distro hands the container the *compute* slice of the GPU — CUDA, NVENC, `nvidia-smi`, so Selkies happily streams over hardware H264 — but **not** the OpenGL slice. There's no `libGLX_nvidia.so` for the toolkit to inject because WSL2 talks to the GPU through the Windows WDDM driver via `/dev/dxg`, not the Linux NVIDIA userland. Anything that needs GL (Blender's viewport, in particular) falls back to `llvmpipe` and feels mushy.
+
+The fix is to also mount the WSL host's d3d12 userland into the container so Mesa's `d3d12` Gallium driver can route GL → DirectX 12 → Windows GPU driver. Uncomment the WSL2 lines in [`compose.yml`](compose.yml), or add the equivalent flags to `docker run`:
+
+```yaml
+volumes:
+  - "/usr/lib/wsl:/usr/lib/wsl:ro"
+environment:
+  LD_LIBRARY_PATH: "/usr/lib/wsl/lib"
+  GALLIUM_DRIVER: "d3d12"
+  MESA_D3D12_DEFAULT_ADAPTER_NAME: "NVIDIA"  # only matters with multi-GPU laptops
+```
+
+Confirm by running `glxinfo | grep "OpenGL renderer"` from a terminal inside the desktop — it should report `D3D12 (NVIDIA <your card>)` instead of `llvmpipe`. (`/dev/dxg` itself is already exposed by `--gpus all` on WSL2, so no extra `devices:` entry is needed.)
+
+The architecture this leans on (WSL GPU paravirtualization via `/dev/dxg`, Mesa's [d3d12 driver](https://docs.mesa3d.org/drivers/d3d12.html) for OpenGL, NVIDIA's [explicit ban](https://docs.nvidia.com/cuda/wsl-user-guide/index.html) on installing Linux NVIDIA drivers inside WSL) is documented by Microsoft and NVIDIA. The specific recipe for surfacing it from inside a Docker container is *not* — it mirrors what [WSLg](https://devblogs.microsoft.com/commandline/wslg-architecture/) does internally. Performance is much better than llvmpipe, but won't match a native Linux GPU host.
+
 ### Installing a coding agent
 
 Agents are intentionally **not** baked into the image — pick whichever you want at runtime via `mise`. The registry has shortnames for the common ones:
