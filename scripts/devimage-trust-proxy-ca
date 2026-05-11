@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Install the throttle proxy's MITM CA into the system trust store so
+# apt / git / curl / pip / etc. verify HTTPS through the proxy. Run
+# once per fresh devimage start when using compose.throttle.yml.
+#
+# Node-based CLIs (claude, codex) already pick up the CA via
+# NODE_EXTRA_CA_CERTS — they don't need this script.
+
+set -euo pipefail
+
+src=/mnt/mitm-ca/mitmproxy-ca-cert.pem
+dst=/usr/local/share/ca-certificates/devimage-throttle.crt
+
+if [[ ! -r "$src" ]]; then
+  # Graceful no-op when the throttle overlay isn't in use — this script
+  # also runs unconditionally from supervisord at container start.
+  echo "devimage-trust-proxy-ca: $src not present, nothing to trust"
+  exit 0
+fi
+
+sudo install -m 0644 "$src" "$dst"
+sudo update-ca-certificates >/dev/null
+echo "trusted: $dst"

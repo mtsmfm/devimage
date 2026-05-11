@@ -1,0 +1,67 @@
+# Outbound rate-limit & blocklist overlay. Use:
+#
+#   docker compose -f compose.yml -f compose.throttle.yml up
+#
+# Stands up a mitmproxy sidecar with a per-host token bucket + URLhaus
+# blocklist (proxy/throttle.py), and reattaches devimage to an
+# `internal: true` network so its only path off-box is via the proxy.
+# Tune limits in proxy/throttle.py. After the first `up`, run
+# `devimage-trust-proxy-ca` once inside the container so apt/git/curl
+# trust the MITM CA. See README "Outbound throttle" section.
+
+services:
+  throttle:
+    image: mitmproxy/mitmproxy:latest
+    container_name: devimage-throttle
+    command: >
+      mitmdump
+      --mode regular
+      --listen-host 0.0.0.0
+      --listen-port 8080
+      -s /opt/throttle.py
+    volumes:
+      - ./proxy/throttle.py:/opt/throttle.py:ro
+      - mitm-ca:/home/mitmproxy/.mitmproxy
+    networks: [egress, isolated]
+    restart: unless-stopped
+    # Resolve upstream names via Quad9 — first-line filter for known-
+    # malicious domains, before the addon's own blocklist sees them.
+    # devimage doesn't need this because it only talks to `throttle`
+    # (everything external is HTTP_PROXY'd through this service).
+    dns:
+      - 9.9.9.9
+      - 149.112.112.112
+    healthcheck:
+      # Wait for mitmproxy to generate the CA before devimage starts,
+      # so NODE_EXTRA_CA_CERTS points at a file that exists.
+      test: ["CMD", "test", "-f", "/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem"]
+      interval: 1s
+      timeout: 1s
+      retries: 60
+
+  devimage:
+    networks: [isolated]
+    depends_on:
+      throttle:
+        condition: service_healthy
+    environment:
+      HTTP_PROXY:  "http://throttle:8080"
+      HTTPS_PROXY: "http://throttle:8080"
+      NO_PROXY:    "localhost,127.0.0.1,::1"
+      # Node 24+: makes built-in fetch (undici) honor *_PROXY env vars.
+      # No-op on older Node; agents on older Node need their own
+      # ProxyAgent wiring (see README).
+      NODE_USE_ENV_PROXY: "1"
+      # Node-based CLIs (claude, codex) read this and trust the MITM CA
+      # without needing a system-wide trust update.
+      NODE_EXTRA_CA_CERTS: "/mnt/mitm-ca/mitmproxy-ca-cert.pem"
+    volumes:
+      - mitm-ca:/mnt/mitm-ca:ro
+
+networks:
+  egress: {}
+  isolated:
+    internal: true
+
+volumes:
+  mitm-ca:

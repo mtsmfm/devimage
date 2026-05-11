@@ -253,6 +253,7 @@ COPY --chmod=0755 scripts/devimage-mcp /usr/local/bin/devimage-mcp
 COPY --chmod=0755 scripts/devimage-supervisor-command /usr/local/bin/devimage-supervisor-command
 COPY --chmod=0755 scripts/devimage-claude /usr/local/bin/devimage-claude
 COPY --chmod=0755 scripts/devimage-codex /usr/local/bin/devimage-codex
+COPY --chmod=0755 scripts/devimage-trust-proxy-ca /usr/local/bin/devimage-trust-proxy-ca
 
 # On-demand GUI startup. The base image starts the GUI stack from
 # supervisord unconditionally; wrap those commands so a normal container boots
@@ -289,6 +290,23 @@ replace_command 'program:wireplumber' \
   'command=/usr/local/bin/devimage-supervisor-command wireplumber'
 replace_command 'program:pipewire-pulse' \
   'command=/usr/local/bin/devimage-supervisor-command pipewire-pulse'
+
+# One-shot at boot: install the throttle proxy's MITM CA into the system
+# trust store (no-op when compose.throttle.yml isn't in use). Runs before
+# user processes via `docker exec` would land, so apt/git/curl/pip
+# transparently verify HTTPS through the proxy.
+cat >> /etc/supervisord.conf <<'CONF'
+
+[program:devimage-trust-proxy-ca]
+command=/usr/local/bin/devimage-trust-proxy-ca
+autorestart=false
+startsecs=0
+priority=1
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+CONF
 EOF
 
 # MCP server CLIs (Python). pipx system-wide so /usr/local/bin/* is universal.

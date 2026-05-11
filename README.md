@@ -85,6 +85,33 @@ Confirm by running `glxinfo | grep "OpenGL renderer"` from a terminal inside the
 
 The architecture this leans on (WSL GPU paravirtualization via `/dev/dxg`, Mesa's [d3d12 driver](https://docs.mesa3d.org/drivers/d3d12.html) for OpenGL, NVIDIA's [explicit ban](https://docs.nvidia.com/cuda/wsl-user-guide/index.html) on installing Linux NVIDIA drivers inside WSL) is documented by Microsoft and NVIDIA. The specific recipe for surfacing it from inside a Docker container is *not* — it mirrors what [WSLg](https://devblogs.microsoft.com/commandline/wslg-architecture/) does internally. Performance is much better than llvmpipe, but won't match a native Linux GPU host.
 
+### Outbound throttle (DoS guardrails)
+
+A coding agent that goes haywire can hammer an API thousands of times per second before you notice. To cap that, run with the bundled overlay:
+
+```bash
+docker compose -f compose.yml -f compose.throttle.yml up
+```
+
+What the overlay does:
+
+- Stands up a `mitmproxy` sidecar that loads [`proxy/throttle.py`](proxy/throttle.py) — a per-host sliding-window token bucket. Default: `600 req / 5 min` per host (≈ 2 req/s sustained, room for short bursts), with looser caps for package registries (`registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`) so `npm install` / `pip install` don't get clipped. Over-limit requests **sleep** rather than 429 — silently backpressures even agents that retry blindly.
+- Reattaches `devimage` to a Docker network with `internal: true` — no NAT, no default route, no way out. The proxy is the only multi-homed peer, so all egress goes through it. **Fail-closed**: an agent that ignores `HTTPS_PROXY` doesn't bypass the limiter, its requests just fail.
+- Sets `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` in `devimage`, plus `NODE_EXTRA_CA_CERTS` so Node-based CLIs (claude, codex) trust the MITM CA without setup, and `NODE_USE_ENV_PROXY=1` so Node 24+ built-in `fetch` honors `*_PROXY`.
+- A supervisord one-shot at boot ([`devimage-trust-proxy-ca`](scripts/devimage-trust-proxy-ca)) installs the MITM CA into the system trust store, so apt / git / curl / pip transparently verify HTTPS through the proxy. No-op when the throttle overlay isn't in use; the script is also runnable manually for debugging.
+- Points the proxy's own resolver at [Quad9](https://www.quad9.net/) (`9.9.9.9`) so known-malicious domains get filtered at name-resolve time, before the addon's blocklist sees them.
+- The addon also fetches the [URLhaus](https://urlhaus.abuse.ch/) malware host list on startup and refreshes every 6h; matching hosts get a 403. Add more sources (e.g. [OISD](https://oisd.nl/), [Steven Black hosts](https://github.com/StevenBlack/hosts)) by appending to `BLOCKLIST_SOURCES` in [`proxy/throttle.py`](proxy/throttle.py).
+
+#### What gets through, what doesn't
+
+- **HTTP / HTTPS via well-behaved clients** (curl, git, pip, apt, requests): ✅ via proxy, rate-limited.
+- **Node 24+ built-in `fetch`**: ✅ via `NODE_USE_ENV_PROXY=1`. **Older Node** (`fetch` from undici default) ignores env proxies — those agents have no route off-box and will just fail until you wire `setGlobalDispatcher(new EnvHttpProxyAgent())` into them.
+- **`git+ssh` / raw SSH**: ❌ no SSH route off `internal`. Switch repos to HTTPS, or set `ProxyCommand` (e.g. `corkscrew`) over the proxy.
+- **Arbitrary TCP / WebRTC / DNS-over-UDP**: ❌ no default route, period.
+- **Selkies (host → container)**: ✅ unaffected. `internal: true` only blocks egress; the published `8080` port still DNATs from the host.
+
+The "fail closed" behavior is on purpose — silent bypass is worse than loud breakage.
+
 ### Installing a coding agent
 
 Agents are intentionally **not** baked into the image — pick whichever you want at runtime via `mise`. The registry has shortnames for the common ones:
