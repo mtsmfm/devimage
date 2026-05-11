@@ -40,6 +40,28 @@ _hits: dict[str, deque[float]] = defaultdict(deque)
 _blocked: set[str] = set()
 
 
+def _suffix_walk(host: str):
+    """Yield host and each parent zone, stopping before the bare TLD.
+
+    For "a.b.example.com": "a.b.example.com", "b.example.com", "example.com".
+    """
+    parts = host.split(".")
+    for i in range(len(parts) - 1):
+        yield ".".join(parts[i:])
+
+
+def _lookup_limit(host: str) -> tuple[int, int]:
+    # Most-specific match wins because we walk leaf → root.
+    for cand in _suffix_walk(host):
+        if cand in LIMITS:
+            return LIMITS[cand]
+    return DEFAULT
+
+
+def _is_blocked(host: str) -> bool:
+    return any(cand in _blocked for cand in _suffix_walk(host))
+
+
 def _parse_hosts_file(text: str) -> set[str]:
     out: set[str] = set()
     for line in text.splitlines():
@@ -84,7 +106,7 @@ class Throttle:
     async def request(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host.lower()
 
-        if host in _blocked:
+        if _is_blocked(host):
             flow.response = http.Response.make(
                 403,
                 b"blocked by devimage throttle: known malicious host\n",
@@ -93,7 +115,7 @@ class Throttle:
             log.info("blocked: %s", host)
             return
 
-        limit, window = LIMITS.get(host, DEFAULT)
+        limit, window = _lookup_limit(host)
         now = time.monotonic()
         q = _hits[host]
         while q and now - q[0] >= window:
