@@ -96,7 +96,8 @@ docker compose -f compose.yml -f compose.throttle.yml up
 What the overlay does:
 
 - Stands up a `mitmproxy` sidecar that loads [`proxy/throttle.py`](proxy/throttle.py) — a per-host sliding-window token bucket. Default: `600 req / 5 min` per host (≈ 2 req/s sustained, room for short bursts), with looser caps for package registries (`registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`) so `npm install` / `pip install` don't get clipped. Over-limit requests **sleep** rather than 429 — silently backpressures even agents that retry blindly.
-- Reattaches `devimage` to a Docker network with `internal: true` — no NAT, no default route, no way out. The proxy is the only multi-homed peer, so all egress goes through it. **Fail-closed**: an agent that ignores `HTTPS_PROXY` doesn't bypass the limiter, its requests just fail.
+- Reattaches `devimage` to a Docker network with `internal: true` — no default route, no NAT, no way out. The proxy sits on the same bridge, so `HTTPS_PROXY` traffic goes intra-bridge to it and reaches the internet via the proxy's own egress leg. **Fail-closed**: an agent that ignores `HTTPS_PROXY` has no kernel route off-box and its requests just hang/error.
+- Adds an `ingress` sidecar (`alpine/socat`) that publishes host `:8080` (Selkies HTTP/WebSocket) and `:3478` (Selkies' embedded coturn TURN-over-TCP), forwarding both to `devimage`. Needed because Docker silently suppresses port publishing on `internal: true` containers, and Selkies' WebRTC media plane only works if the browser can actually reach the TURN advertised in `iceServers`. The overlay also sets `SELKIES_TURN_HOST=localhost` and `TURN_EXTERNAL_IP=127.0.0.1` so coturn advertises a browser-reachable host (assumes browser is on the docker host — override if remote).
 - Sets `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` in `devimage`, plus `NODE_EXTRA_CA_CERTS` so Node-based CLIs (claude, codex) trust the MITM CA without setup, and `NODE_USE_ENV_PROXY=1` so Node 24+ built-in `fetch` honors `*_PROXY`.
 - A supervisord one-shot at boot ([`devimage-trust-proxy-ca`](scripts/devimage-trust-proxy-ca)) installs the MITM CA into the system trust store, so apt / git / curl / pip transparently verify HTTPS through the proxy. No-op when the throttle overlay isn't in use; the script is also runnable manually for debugging.
 - Points the proxy's own resolver at [Quad9](https://www.quad9.net/) (`9.9.9.9`) so known-malicious domains get filtered at name-resolve time, before the addon's blocklist sees them.
@@ -105,10 +106,10 @@ What the overlay does:
 #### What gets through, what doesn't
 
 - **HTTP / HTTPS via well-behaved clients** (curl, git, pip, apt, requests): ✅ via proxy, rate-limited.
-- **Node 24+ built-in `fetch`**: ✅ via `NODE_USE_ENV_PROXY=1`. **Older Node** (`fetch` from undici default) ignores env proxies — those agents have no route off-box and will just fail until you wire `setGlobalDispatcher(new EnvHttpProxyAgent())` into them.
-- **`git+ssh` / raw SSH**: ❌ no SSH route off `internal`. Switch repos to HTTPS, or set `ProxyCommand` (e.g. `corkscrew`) over the proxy.
+- **Node 24+ built-in `fetch`**: ✅ via `NODE_USE_ENV_PROXY=1`. **Older Node** (`fetch` from undici default) ignores env proxies — those agents fail with `ENETUNREACH` until you wire `setGlobalDispatcher(new EnvHttpProxyAgent())` into them.
+- **`git+ssh` / raw SSH**: ❌ no SSH route off-box. Switch repos to HTTPS, or set `ProxyCommand` (e.g. `corkscrew`) over the proxy.
 - **Arbitrary TCP / WebRTC / DNS-over-UDP**: ❌ no default route, period.
-- **Selkies (host → container)**: ✅ unaffected. `internal: true` only blocks egress; the published `8080` port still DNATs from the host.
+- **Selkies (host → container)**: ✅ via the `ingress` sidecar. Note that Selkies sees the sidecar's IP as the client, not your real browser IP — a non-issue functionally but it skews access logs.
 
 The "fail closed" behavior is on purpose — silent bypass is worse than loud breakage.
 

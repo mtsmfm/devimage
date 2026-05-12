@@ -2,12 +2,16 @@
 #
 #   docker compose -f compose.yml -f compose.throttle.yml up
 #
-# Stands up a mitmproxy sidecar with a per-host token bucket + URLhaus
-# blocklist (proxy/throttle.py), and reattaches devimage to an
-# `internal: true` network so its only path off-box is via the proxy.
-# Tune limits in proxy/throttle.py. After the first `up`, run
-# `devimage-trust-proxy-ca` once inside the container so apt/git/curl
-# trust the MITM CA. See README "Outbound throttle" section.
+# Stands up:
+#   throttle  — mitmproxy sidecar with per-host token bucket + URLhaus
+#               blocklist (proxy/throttle.py).
+#   ingress   — small TCP forwarder (socat) that exposes devimage's
+#               :8080 (Selkies) to the host. Needed because devimage's
+#               own network is `internal: true` and Docker silently
+#               suppresses port publishing for internal-only containers.
+# devimage sits on the `isolated` (`internal: true`) bridge with no
+# default route, so its only path off-box is the proxy. Tune limits in
+# proxy/throttle.py. See README "Outbound throttle" section.
 
 services:
   throttle:
@@ -22,7 +26,10 @@ services:
     volumes:
       - ./proxy/throttle.py:/opt/throttle.py:ro
       - mitm-ca:/home/mitmproxy/.mitmproxy
-    networks: [egress, isolated]
+    networks:
+      egress:
+        priority: 1     # default route via egress (needs internet)
+      isolated: {}
     restart: unless-stopped
     # Resolve upstream names via Quad9 — first-line filter for known-
     # malicious domains, before the addon's own blocklist sees them.
@@ -39,15 +46,57 @@ services:
       timeout: 1s
       retries: 60
 
+  ingress:
+    image: alpine/socat:latest
+    container_name: devimage-ingress
+    # Forward host → devimage for both:
+    #   8080 = Selkies HTTP/WebSocket signaling
+    #   3478 = embedded coturn (TURN over TCP, single port; relayed UDP
+    #          stays inside devimage so we don't need 49152-65535 too)
+    # socat is on the isolated bridge to reach devimage by name, and on
+    # a normal bridge so its own published ports actually get DNAT'd.
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        socat TCP-LISTEN:8080,reuseaddr,fork TCP:devimage:8080 &
+        exec socat TCP-LISTEN:3478,reuseaddr,fork TCP:devimage:3478
+    networks: [isolated, ingress]
+    ports:
+      - "8080:8080"
+      - "3478:3478"
+    depends_on:
+      - devimage
+    restart: unless-stopped
+
   devimage:
     networks: [isolated]
+    # Clear the base compose.yml's "8080:8080" — Docker would silently
+    # drop it under internal: true anyway, but the dangling binding is
+    # noise. Selkies is published via the `ingress` sidecar instead.
+    ports: !reset []
     depends_on:
       throttle:
         condition: service_healthy
     environment:
+      # Both cases: POSIX-y tools (wget, some Python libs) only honor
+      # lowercase, CGI-derived ones (Node, Java, etc.) only honor
+      # uppercase. Set both so we don't have to remember which is which.
       HTTP_PROXY:  "http://throttle:8080"
       HTTPS_PROXY: "http://throttle:8080"
       NO_PROXY:    "localhost,127.0.0.1,::1"
+      http_proxy:  "http://throttle:8080"
+      https_proxy: "http://throttle:8080"
+      no_proxy:    "localhost,127.0.0.1,::1"
+      # Selkies advertises this as the TURN host in iceServers JSON the
+      # browser receives. With ingress sidecar forwarding host:3478 →
+      # devimage:3478, "localhost" works as long as the browser is on
+      # the docker host. For remote browsers, override to the host's
+      # actual reachable IP/hostname.
+      SELKIES_TURN_HOST: "localhost"
+      # XOR-RELAYED-ADDRESS coturn returns to the WebRTC peer (selkies),
+      # which is in the same container — so 127.0.0.1 is reachable.
+      TURN_EXTERNAL_IP: "127.0.0.1"
       # Node 24+: makes built-in fetch (undici) honor *_PROXY env vars.
       # No-op on older Node; agents on older Node need their own
       # ProxyAgent wiring (see README).
@@ -55,13 +104,22 @@ services:
       # Node-based CLIs (claude, codex) read this and trust the MITM CA
       # without needing a system-wide trust update.
       NODE_EXTRA_CA_CERTS: "/mnt/mitm-ca/mitmproxy-ca-cert.pem"
+      # Bundled-runtime fallbacks. system curl/Python already read
+      # /etc/ssl/certs/... by default (devimage-trust-proxy-ca merges
+      # the MITM CA into it at boot), but bundled OpenSSL (Blender's
+      # Python, mise-installed Pythons) and the requests library
+      # (certifi bundle) ignore that path unless these are set.
+      SSL_CERT_FILE:      "/etc/ssl/certs/ca-certificates.crt"
+      REQUESTS_CA_BUNDLE: "/etc/ssl/certs/ca-certificates.crt"
+      CURL_CA_BUNDLE:     "/etc/ssl/certs/ca-certificates.crt"
     volumes:
       - mitm-ca:/mnt/mitm-ca:ro
 
 networks:
-  egress: {}
+  egress: {}            # throttle's outbound to the internet
+  ingress: {}           # ingress sidecar's host-side bridge (port publish)
   isolated:
-    internal: true
+    internal: true      # devimage lives here — no default route, no NAT
 
 volumes:
   mitm-ca:
