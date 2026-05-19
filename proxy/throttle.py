@@ -25,6 +25,7 @@ LIMITS: dict[str, tuple[int, int]] = {
     "registry.npmjs.org":     (3000, 60),
     "pypi.org":               (3000, 60),
     "files.pythonhosted.org": (3000, 60),
+    "pytorch.org":            (3000, 60),
 }
 # 600 req / 5 min ≈ 2 req/s sustained, with room for short bursts.
 DEFAULT: tuple[int, int] = (600, 300)

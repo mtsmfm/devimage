@@ -5,10 +5,11 @@
 # Stands up:
 #   throttle  — mitmproxy sidecar with per-host token bucket + URLhaus
 #               blocklist (proxy/throttle.py).
-#   ingress   — small TCP forwarder (socat) that exposes devimage's
-#               :8080 (Selkies) to the host. Needed because devimage's
-#               own network is `internal: true` and Docker silently
-#               suppresses port publishing for internal-only containers.
+#   ingress   — HAProxy L4 forwarder (proxy/haproxy.cfg) that exposes
+#               devimage's :8080 (Selkies) and :3478 (coturn) to the
+#               host. Needed because devimage's own network is
+#               `internal: true` and Docker silently suppresses port
+#               publishing for internal-only containers.
 # devimage sits on the `isolated` (`internal: true`) bridge with no
 # default route, so its only path off-box is the proxy. Tune limits in
 # proxy/throttle.py. See README "Outbound throttle" section.
@@ -22,6 +23,7 @@ services:
       --mode regular
       --listen-host 0.0.0.0
       --listen-port 8080
+      --set stream_large_bodies=1m
       -s /opt/throttle.py
     volumes:
       - ./proxy/throttle.py:/opt/throttle.py:ro
@@ -47,24 +49,21 @@ services:
       retries: 60
 
   ingress:
-    image: alpine/socat:latest
+    image: haproxy:lts-alpine
     container_name: devimage-ingress
-    # Forward host → devimage for both:
-    #   8080 = Selkies HTTP/WebSocket signaling
-    #   3478 = embedded coturn (TURN over TCP, single port; relayed UDP
+    # L4 TCP forwarder. Config in proxy/haproxy.cfg fronts:
+    #   8080 — Selkies HTTP/WebSocket signaling
+    #   3478 — embedded coturn (TURN over TCP, single port; relayed UDP
     #          stays inside devimage so we don't need 49152-65535 too)
-    # socat is on the isolated bridge to reach devimage by name, and on
-    # a normal bridge so its own published ports actually get DNAT'd.
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        socat TCP-LISTEN:8080,reuseaddr,fork TCP:devimage:8080 &
-        exec socat TCP-LISTEN:3478,reuseaddr,fork TCP:devimage:3478
+    # On the isolated bridge to reach devimage by name, and on a normal
+    # bridge so its own published ports actually get DNAT'd.
+    volumes:
+      - ./proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks: [isolated, ingress]
     ports:
-      - "8080:8080"
-      - "3478:3478"
+      - "8080:8080"          # Selkies HTTP/WebSocket
+      - "3478:3478"          # coturn (TURN over TCP)
+      - "18000-18009:18000-18009"   # ad-hoc dev services (see haproxy.cfg)
     depends_on:
       - devimage
     restart: unless-stopped
