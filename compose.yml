@@ -28,7 +28,7 @@ services:
       # GALLIUM_DRIVER: "d3d12"
       # MESA_D3D12_DEFAULT_ADAPTER_NAME: "NVIDIA"
     volumes:
-      - "${PWD}:/workspace"
+      - "${PWD}/workspace:/workspace"
       # HOME inside the container is /config (LSIO convention), so agent
       # credentials land under /config/.<tool>.
       - "${HOME}/.claude:/config/.claude"
