@@ -6,8 +6,8 @@
 #   throttle  — mitmproxy sidecar with per-host token bucket + URLhaus
 #               blocklist (proxy/throttle.py).
 #   ingress   — HAProxy L4 forwarder (proxy/haproxy.cfg) that exposes
-#               devimage's :8080 (Selkies) and :3478 (coturn) to the
-#               host. Needed because devimage's own network is
+#               devimage's :3000 (Selkies HTTP/WebSocket) to the host
+#               on :8080. Needed because devimage's own network is
 #               `internal: true` and Docker silently suppresses port
 #               publishing for internal-only containers.
 # devimage sits on the `isolated` (`internal: true`) bridge with no
@@ -52,25 +52,23 @@ services:
     image: haproxy:lts-alpine
     container_name: devimage-ingress
     # L4 TCP forwarder. Config in proxy/haproxy.cfg fronts:
-    #   8080 — Selkies HTTP/WebSocket signaling
-    #   3478 — embedded coturn (TURN over TCP, single port; relayed UDP
-    #          stays inside devimage so we don't need 49152-65535 too)
+    #   8080         — Selkies HTTP/WebSocket (forwarded to devimage:3000)
+    #   18000-18009  — ad-hoc dev services (port preserved)
     # On the isolated bridge to reach devimage by name, and on a normal
     # bridge so its own published ports actually get DNAT'd.
     volumes:
       - ./proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks: [isolated, ingress]
     ports:
-      - "8080:8080"          # Selkies HTTP/WebSocket
-      - "3478:3478"          # coturn (TURN over TCP)
-      - "18000-18009:18000-18009"   # ad-hoc dev services (see haproxy.cfg)
+      - "8080:8080"                 # Selkies HTTP/WebSocket
+      - "18000-18009:18000-18009"   # ad-hoc dev services
     depends_on:
       - devimage
     restart: unless-stopped
 
   devimage:
     networks: [isolated]
-    # Clear the base compose.yml's "8080:8080" — Docker would silently
+    # Clear the base compose.yml's published port — Docker would silently
     # drop it under internal: true anyway, but the dangling binding is
     # noise. Selkies is published via the `ingress` sidecar instead.
     ports: !reset []
@@ -87,15 +85,6 @@ services:
       http_proxy:  "http://throttle:8080"
       https_proxy: "http://throttle:8080"
       no_proxy:    "localhost,127.0.0.1,::1"
-      # Selkies advertises this as the TURN host in iceServers JSON the
-      # browser receives. With ingress sidecar forwarding host:3478 →
-      # devimage:3478, "localhost" works as long as the browser is on
-      # the docker host. For remote browsers, override to the host's
-      # actual reachable IP/hostname.
-      SELKIES_TURN_HOST: "localhost"
-      # XOR-RELAYED-ADDRESS coturn returns to the WebRTC peer (selkies),
-      # which is in the same container — so 127.0.0.1 is reachable.
-      TURN_EXTERNAL_IP: "127.0.0.1"
       # Node 24+: makes built-in fetch (undici) honor *_PROXY env vars.
       # No-op on older Node; agents on older Node need their own
       # ProxyAgent wiring (see README).

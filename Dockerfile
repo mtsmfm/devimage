@@ -1,14 +1,13 @@
 # syntax=docker/dockerfile:1.7
 #
 # Browser-accessible Linux desktop pre-configured for AI coding agents.
-# Built on top of the Selkies WebRTC desktop image (KDE Plasma + Ubuntu 24.04).
+# Built on linuxserver.io's baseimage-selkies (openbox/labwc + Ubuntu 24.04),
+# which tracks Selkies HEAD with PixelFlux WebSocket pixel streaming.
 
-ARG SELKIES_VERSION=1.6.2
 ARG BLENDER_VERSION=4.2.20
 ARG BLENDER_MAJOR=4.2
 ARG BLENDER_SHA256=1f73f797d62be8aa2161f8c88a12f474cf23611592fa77b8fc003d60f0594a83
 ARG FREECAD_VERSION=1.1.1
-ARG USERNAME=ubuntu
 
 # ============================================================================
 # Parallel download stages
@@ -34,21 +33,6 @@ RUN sed -i -E \
  && apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates xz-utils \
  && rm -rf /var/lib/apt/lists/*
-
-# Selkies: 4 co-versioned release artifacts (GStreamer build, Python wheel,
-# web client, js-interposer .deb). Must be applied together.
-FROM dl-base AS selkies-fetch
-ARG SELKIES_VERSION
-RUN mkdir /out \
- && for f in \
-      "gstreamer-selkies_gpl_v${SELKIES_VERSION}_ubuntu24.04_amd64.tar.gz" \
-      "selkies_gstreamer-${SELKIES_VERSION}-py3-none-any.whl" \
-      "selkies-gstreamer-web_v${SELKIES_VERSION}.tar.gz" \
-      "selkies-js-interposer_v${SELKIES_VERSION}_ubuntu24.04_amd64.deb"; \
-    do \
-      curl -fsSL -o "/out/$f" \
-        "https://github.com/selkies-project/selkies/releases/download/v${SELKIES_VERSION}/$f"; \
-    done
 
 # Blender 4.2 LTS. We pin to 4.2 rather than the current 5.x because that
 # version's bpy API has the most stable AI training data — newer releases
@@ -83,29 +67,40 @@ RUN curl -fsSL -o /tmp/FreeCAD.AppImage \
  && mv /tmp/extract/squashfs-root /out \
  && rm -rf /tmp/extract /tmp/FreeCAD.AppImage
 
-# FreeCAD MCP add-on — only the addon/FreeCADMCP subtree of the upstream repo.
 FROM dl-base AS freecad-mcp-fetch
 RUN apt-get update && apt-get install -y --no-install-recommends git \
  && rm -rf /var/lib/apt/lists/* \
  && git clone --depth 1 https://github.com/neka-nat/freecad-mcp.git /tmp/freecad-mcp \
  && mv /tmp/freecad-mcp/addon/FreeCADMCP /out
 
-# Winetricks (single shell script).
 FROM dl-base AS winetricks-fetch
 RUN curl -fsSL -o /out \
       https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks
 
-# mise binary (single static binary; the installer takes a full destination path).
+# MISE_INSTALL_PATH so the installer drops a single binary at /out.
 FROM dl-base AS mise-fetch
 RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/out sh
 
 # ============================================================================
 # Final image
 # ============================================================================
-FROM ghcr.io/selkies-project/nvidia-egl-desktop:24.04
-ARG USERNAME
+#
+# LSIO baseimage-selkies ships:
+#   - s6-overlay v3 init
+#   - abc user (PUID/PGID remapped at runtime; HOME=/config)
+#   - selkies in /lsiopy venv, with PixelFlux + WebSocket pixel streaming
+#   - openbox + labwc, Xvfb, nginx, pulseaudio, dbus
+#   - sudo NOPASSWD for the abc user
+#   - HTTP port 3000 / HTTPS port 3001
+#
+# We layer dev tooling, Wine, Blender/FreeCAD, mise on top, then rewire the
+# s6-rc bundles so the GUI services don't auto-start (devimage-gui controls).
+FROM ghcr.io/linuxserver/baseimage-selkies:ubuntunoble
 ARG BLENDER_MAJOR
-USER 0
+# Surface BLENDER_MAJOR as an env var so heredoc'd RUN steps (where ARG
+# expansion doesn't reach) can reference it. Persists at runtime too —
+# self-documents which Blender major lives in /opt/blender.
+ENV BLENDER_MAJOR=${BLENDER_MAJOR}
 ENV DEBIAN_FRONTEND=noninteractive
 
 # bash for RUN heredocs (arrays + readable inline comments).
@@ -116,23 +111,22 @@ SHELL ["/bin/bash", "-c"]
 # install everything in a single apt-get update + install pass. Packages are
 # grouped inline so the rationale survives future edits.
 # ----------------------------------------------------------------------------
-COPY --from=selkies-fetch /out /tmp/selkies/
 RUN <<'EOF'
 set -euo pipefail
 
-# Pin all apt traffic to the Azure mirror (same logic as in dl-base).
-sed -i -E \
-    -e 's|https?://archive\.ubuntu\.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' \
-    -e 's|https?://security\.ubuntu\.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' \
-    /etc/apt/sources.list.d/ubuntu.sources
+# Pin all apt traffic to the Azure mirror. LSIO baseimage-ubuntu replaces
+# the Ubuntu 24.04 cloud-image `ubuntu.sources` with the legacy
+# `sources.list`, so target whichever exists.
+for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+    [ -f "$f" ] && sed -i -E \
+        -e 's|https?://archive\.ubuntu\.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' \
+        -e 's|https?://security\.ubuntu\.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' \
+        "$f"
+done
 {
   echo 'Acquire::Retries "3";'
   echo 'Acquire::http::Timeout "30";'
 } > /etc/apt/apt.conf.d/80-resilient
-
-# The base image already registers WineHQ via a different keyring filename;
-# wipe it so apt does not see two conflicting source entries for the URL.
-rm -f /etc/apt/sources.list.d/*wine* /etc/apt/keyrings/*wine*
 
 install -m 0755 -d /etc/apt/keyrings
 
@@ -151,9 +145,12 @@ echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.g
 # 32-bit Wine packages
 dpkg --add-architecture i386
 
+# Packages NOT already in LSIO baseimage-selkies. Things like ca-certificates,
+# openssh-client, sudo, locales-all, python3, python3-venv, xdotool, xclip,
+# dbus-x11 are pre-installed there.
 apt_packages=(
     # Core dev tools, TLS, transport
-    git curl wget ca-certificates gnupg openssh-client rsync direnv
+    git curl wget gnupg rsync direnv
 
     # Archive handling
     unzip zip xz-utils
@@ -164,17 +161,23 @@ apt_packages=(
     # Search / parse / display utilities AI agents reach for constantly
     jq yq ripgrep fd-find fzf tree less
 
-    # GUI automation primitives (drive desktop, take screenshots, clipboard)
-    xdotool wmctrl scrot xclip
+    # GUI automation primitives beyond what LSIO ships
+    wmctrl scrot
+
+    # File manager (LSIO's openbox baseimage ships only xterm)
+    pcmanfm
+
+    # update-desktop-database for Blender / FreeCAD .desktop entries
+    desktop-file-utils
 
     # Media swiss-army knife (transcode, capture, probe)
     ffmpeg
 
     # Shell stack
-    zsh sudo locales man-db bash-completion
+    zsh man-db bash-completion
 
-    # System Python (per-project versions go via mise)
-    python3 python3-pip python3-venv pipx
+    # pip + pipx for the MCP server CLIs below
+    python3-pip pipx
 
     # Blender 4.2 runtime libs (its tarball is otherwise self-contained)
     libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0
@@ -190,48 +193,27 @@ apt-get install -y --no-install-recommends "${apt_packages[@]}"
 # Wine wants its Recommends so the i386 split installs alongside amd64.
 apt-get install -y --install-recommends winehq-stable
 
-# Selkies js-interposer .deb (downloaded in selkies-fetch); apt resolves its
-# deps and ties it into the same dpkg state as the rest.
-apt-get install -y --no-install-recommends /tmp/selkies/selkies-js-interposer_*.deb
-
-locale-gen en_US.UTF-8
 ln -s "$(command -v fdfind)" /usr/local/bin/fd
 
 rm -rf /var/lib/apt/lists/*
 EOF
 
 # ----------------------------------------------------------------------------
-# Selkies upgrade — apply the remaining 3 co-versioned artifacts on top of the
-# base image's bundled version (the .deb half went in via apt above).
-# ----------------------------------------------------------------------------
-RUN <<'EOF'
-set -euo pipefail
-cd /opt
-tar -xzf /tmp/selkies/gstreamer-selkies_gpl_*.tar.gz
-tar -xzf /tmp/selkies/selkies-gstreamer-web_*.tar.gz
-pip3 install --break-system-packages --no-cache-dir --force-reinstall \
-    /tmp/selkies/selkies_gstreamer-*.whl "websockets<14.0"
-rm -rf /tmp/selkies
-EOF
-
-# ----------------------------------------------------------------------------
 # Bring in artifacts from the parallel fetch stages and wire them up.
 # ----------------------------------------------------------------------------
 
-# Blender.
 COPY --from=blender-fetch /out /opt/blender
 RUN ln -s /opt/blender/blender /usr/local/bin/blender \
  && install -Dm 0644 /opt/blender/blender.desktop /usr/share/applications/blender.desktop \
  && install -Dm 0644 /opt/blender/blender.svg /usr/share/icons/hicolor/scalable/apps/blender.svg \
  && update-desktop-database /usr/share/applications
 
-# Blender MCP add-on into the user's scripts dir (canonical place for legacy
-# add-ons in Blender 4.2). Owned by the ubuntu user so save_userpref() can
-# rewrite the surrounding state.
-COPY --from=blender-mcp-fetch --chown=${USERNAME}:${USERNAME} \
-      /out /home/${USERNAME}/.config/blender/${BLENDER_MAJOR}/scripts/addons/blender_mcp.py
+# Add-ons under /defaults get copied to /config on first boot by
+# init-devimage-config. Blender 4.2 only auto-scans the per-user scripts dir
+# for legacy add-ons, so the path must be inside $HOME at runtime.
+COPY --from=blender-mcp-fetch /out \
+      /defaults/.config/blender/${BLENDER_MAJOR}/scripts/addons/blender_mcp.py
 
-# FreeCAD (extracted AppImage tree).
 COPY --from=freecad-fetch /out /opt/freecad
 RUN ln -s /opt/freecad/AppRun /usr/local/bin/freecad \
  && install -Dm 0644 /opt/freecad/org.freecad.FreeCAD.desktop /usr/share/applications/freecad.desktop \
@@ -239,131 +221,195 @@ RUN ln -s /opt/freecad/AppRun /usr/local/bin/freecad \
  && install -Dm 0644 /opt/freecad/org.freecad.FreeCAD.svg /usr/share/icons/hicolor/scalable/apps/freecad.svg \
  && update-desktop-database /usr/share/applications
 
-# Single-file binaries.
 COPY --from=winetricks-fetch --chmod=0755 /out /usr/local/bin/winetricks
 COPY --from=mise-fetch /out /usr/local/bin/mise
 
-# FreeCAD MCP add-on into the user's Mod dir (FreeCAD always scans this,
-# regardless of where FreeCAD itself is installed).
-COPY --from=freecad-mcp-fetch --chown=${USERNAME}:${USERNAME} \
-      /out /home/${USERNAME}/.local/share/FreeCAD/Mod/FreeCADMCP
+COPY --from=freecad-mcp-fetch /out \
+      /defaults/.local/share/FreeCAD/Mod/FreeCADMCP
+
+# openbox / labwc don't auto-scan /usr/share/applications/*.desktop — their
+# right-click root menu is a static XML file. Append Blender / FreeCAD entries
+# to both the X11 (openbox) and Wayland (labwc) defaults. init-selkies-config
+# copies these to $HOME/.config/{openbox,labwc}/menu.xml on first GUI boot.
+RUN <<'EOF'
+set -euo pipefail
+entries='<item label="Files (pcmanfm)"><action name="Execute"><command>pcmanfm /workspace</command></action></item>\n<item label="Blender" icon="/usr/share/icons/hicolor/scalable/apps/blender.svg"><action name="Execute"><command>/usr/local/bin/blender</command></action></item>\n<item label="FreeCAD" icon="/usr/share/icons/hicolor/scalable/apps/freecad.svg"><action name="Execute"><command>/usr/local/bin/freecad</command></action></item>'
+for f in /defaults/menu.xml /defaults/menu_wayland.xml; do
+    [ -f "$f" ] || continue
+    sed -i "s|</menu>|${entries}\n</menu>|" "$f"
+done
+EOF
 
 COPY --chmod=0755 scripts/devimage-gui /usr/local/bin/devimage-gui
 COPY --chmod=0755 scripts/devimage-mcp /usr/local/bin/devimage-mcp
-COPY --chmod=0755 scripts/devimage-supervisor-command /usr/local/bin/devimage-supervisor-command
 COPY --chmod=0755 scripts/devimage-claude /usr/local/bin/devimage-claude
 COPY --chmod=0755 scripts/devimage-codex /usr/local/bin/devimage-codex
 COPY --chmod=0755 scripts/devimage-trust-proxy-ca /usr/local/bin/devimage-trust-proxy-ca
-
-# On-demand GUI startup. The base image starts the GUI stack from
-# supervisord unconditionally; wrap those commands so a normal container boots
-# headless and an agent can opt into Xvfb/KDE/Selkies only when needed.
-RUN <<'EOF'
-set -euo pipefail
-
-replace_command() {
-  local section="$1"
-  local command="$2"
-  local tmp
-  tmp="$(mktemp)"
-  awk -v section="[${section}]" -v command="${command}" '
-    $0 == section { in_section = 1; print; next }
-    /^\[/ { in_section = 0 }
-    in_section && /^command=/ { print command; next }
-    { print }
-  ' /etc/supervisord.conf > "${tmp}"
-  cat "${tmp}" > /etc/supervisord.conf
-  rm -f "${tmp}"
-}
-
-replace_command 'program:entrypoint' \
-  'command=/usr/local/bin/devimage-supervisor-command gui'
-replace_command 'program:selkies-gstreamer' \
-  'command=/usr/local/bin/devimage-supervisor-command selkies'
-replace_command 'program:kasmvnc' \
-  'command=/usr/local/bin/devimage-supervisor-command kasmvnc'
-replace_command 'program:nginx' \
-  'command=/usr/local/bin/devimage-supervisor-command nginx'
-replace_command 'program:pipewire' \
-  'command=/usr/local/bin/devimage-supervisor-command pipewire'
-replace_command 'program:wireplumber' \
-  'command=/usr/local/bin/devimage-supervisor-command wireplumber'
-replace_command 'program:pipewire-pulse' \
-  'command=/usr/local/bin/devimage-supervisor-command pipewire-pulse'
-
-# One-shot at boot: install the throttle proxy's MITM CA into the system
-# trust store (no-op when compose.throttle.yml isn't in use). Runs before
-# user processes via `docker exec` would land, so apt/git/curl/pip
-# transparently verify HTTPS through the proxy.
-cat >> /etc/supervisord.conf <<'CONF'
-
-[program:devimage-trust-proxy-ca]
-command=/usr/local/bin/devimage-trust-proxy-ca
-autorestart=false
-startsecs=0
-priority=1
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-CONF
-EOF
 
 # MCP server CLIs (Python). pipx system-wide so /usr/local/bin/* is universal.
 RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install blender-mcp \
  && PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install freecad-mcp
 
-# mise on PATH for every shell (sh, login shells, sudo -i).
+# mise on PATH for every login shell (sh, sudo -i). The per-user .bashrc /
+# .zshrc seeded into /defaults below covers interactive non-login shells.
 RUN printf '%s\n%s\n' \
       'export PATH="/usr/local/bin:$HOME/.local/share/mise/shims:$PATH"' \
       'command -v mise >/dev/null && eval "$(mise activate bash)"' \
       > /etc/profile.d/10-mise.sh \
  && chmod 0644 /etc/profile.d/10-mise.sh
 
-# Sudo NOPASSWD + secure_path that includes mise shims; default shell to zsh;
-# create the workspace dir owned by the user.
-#
-# The base image's /etc/sudoers.d/kdesu-sudoers ships with non-0440 perms which
-# would make `visudo -c` fail across the whole drop-in dir, so normalise perms
-# on every file before validating.
-RUN echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${USERNAME} \
- && echo 'Defaults secure_path="/home/'${USERNAME}'/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+# sudoers: LSIO baseimage already grants abc NOPASSWD via the sudo group, but
+# extend secure_path to include mise shims so `sudo mise-installed-cmd` works.
+RUN echo 'Defaults secure_path="/config/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
       > /etc/sudoers.d/91-secure-path \
- && chmod 0440 /etc/sudoers.d/* \
- && visudo -c \
- && usermod --shell /usr/bin/zsh ${USERNAME} \
- && install -d -o ${USERNAME} -g ${USERNAME} /workspace
+ && chmod 0440 /etc/sudoers.d/91-secure-path \
+ && visudo -c
+
+RUN usermod --shell /usr/bin/zsh abc
 
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-USER ${USERNAME}
-WORKDIR /workspace
-
 # ----------------------------------------------------------------------------
-# Per-user setup: oh-my-zsh, mise activation in rc files, and the Blender MCP
-# add-on enabled in userpref.blend. Coding agents (Claude Code, Codex, etc.)
-# are intentionally NOT installed here — pick yours at runtime via mise.
+# Per-user defaults — seeded into /defaults, copied to /config on first boot.
+#
+# /config is the runtime HOME for abc; it's typically a named volume, so we
+# can't write to it at build time. Instead, install everything into /defaults
+# and let init-devimage-config (oneshot) copy missing entries on boot.
 # ----------------------------------------------------------------------------
 RUN <<'EOF'
 set -euo pipefail
 
 # oh-my-zsh installs to $HOME/.oh-my-zsh and creates a default ~/.zshrc.
+# Force HOME so the install lands in /defaults/, not /root/.
+export HOME=/defaults
+mkdir -p /defaults
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 
-mkdir -p ~/.config/mise
+mkdir -p /defaults/.config/mise
 
 # profile.d covers login shells; these rc-file entries cover non-login
-# interactive shells (e.g. terminals spawned inside the Selkies desktop).
+# interactive shells (e.g. terminals spawned inside the desktop).
 for shell in bash zsh; do
     {
         echo 'export PATH="$HOME/.local/share/mise/shims:$PATH"'
         echo "eval \"\$(/usr/local/bin/mise activate ${shell})\""
         echo "eval \"\$(/usr/bin/direnv hook ${shell})\""
-    } >> "$HOME/.${shell}rc"
+    } >> "/defaults/.${shell}rc"
 done
 
-# Auto-enable the Blender MCP add-on so the agent doesn't have to click through
-# Preferences. Saves to ~/.config/blender/4.2/config/userpref.blend.
-blender --background --python-expr \
-  "import bpy; bpy.ops.preferences.addon_enable(module='blender_mcp'); bpy.ops.wm.save_userpref()"
+# Auto-enable Blender MCP so the agent doesn't have to click through
+# Preferences. HOME=/defaults (set above) steers userpref.blend into the
+# seed tree; BLENDER_USER_SCRIPTS points at where the add-on COPY landed.
+BLENDER_USER_SCRIPTS="/defaults/.config/blender/${BLENDER_MAJOR}/scripts" \
+  blender --background --python-expr \
+    "import bpy; bpy.ops.preferences.addon_enable(module='blender_mcp'); bpy.ops.wm.save_userpref()"
 EOF
+
+# ----------------------------------------------------------------------------
+# s6-rc rewiring: move GUI services out of the default `user` bundle into a
+# `gui` bundle so they don't auto-start. devimage-gui controls them with
+# `s6-rc -u change gui` / `s6-rc -d change gui`.
+# ----------------------------------------------------------------------------
+RUN <<'EOF'
+set -euo pipefail
+cd /etc/s6-overlay/s6-rc.d
+
+# GUI longrun services + their init oneshots. svc-watchdog and svc-docker
+# stay in `user` (lightweight, do not need the desktop stack).
+gui_services=(
+    svc-de svc-selkies svc-xorg svc-xsettingsd
+    svc-pulseaudio svc-dbus svc-nginx
+    init-video init-selkies init-selkies-config init-selkies-end
+)
+
+for svc in "${gui_services[@]}"; do
+    rm -f "user/contents.d/${svc}"
+done
+
+# init-config depends on init-selkies-end (LSIO upstream wires it that way to
+# stage default /config files after selkies is configured). Since we yanked
+# init-selkies-end out of the boot bundle, also drop init-config — we'll seed
+# /config from our own oneshot (init-devimage-config) regardless of GUI state.
+rm -f user/contents.d/init-config
+
+# Define the on-demand `gui` bundle. The bundle expansion brings in transitive
+# deps (svc-pulseaudio→init-services etc.) automatically; listing just the
+# top-level GUI entries is enough.
+mkdir -p gui/contents.d
+echo bundle > gui/type
+for svc in "${gui_services[@]}" init-config; do
+    touch "gui/contents.d/${svc}"
+done
+
+# A boot-time oneshot that seeds /config from /defaults (idempotent) and
+# creates /workspace owned by abc. Runs after init-adduser remaps abc's
+# UID/GID to PUID/PGID, so chown lands on the right numeric IDs.
+mkdir -p init-devimage-config/dependencies.d
+echo oneshot > init-devimage-config/type
+cat > init-devimage-config/up <<'UP'
+/etc/s6-overlay/s6-rc.d/init-devimage-config/run
+UP
+touch init-devimage-config/dependencies.d/init-services
+cat > init-devimage-config/run <<'RUN'
+#!/usr/bin/with-contenv bash
+set -euo pipefail
+
+# Seed /config from /defaults. Copy only entries that don't yet exist in
+# /config so user changes survive restarts (relevant when /config is a
+# named volume).
+shopt -s dotglob nullglob
+for entry in /defaults/*; do
+    name="${entry##*/}"
+    case "${name}" in
+        # LSIO baseimage defaults that init-selkies-config handles itself
+        autostart|autostart_wayland|default.conf|labwc.xml|menu.xml|menu_wayland.xml|startwm.sh|startwm_wayland.sh|pid)
+            continue ;;
+    esac
+    [ -e "/config/${name}" ] || cp -a "${entry}" "/config/${name}"
+done
+chown -R abc:abc /config 2>/dev/null || true
+
+install -d -o abc -g abc /workspace
+RUN
+chmod 0755 init-devimage-config/run
+
+touch user/contents.d/init-devimage-config
+
+# devimage-trust-proxy-ca runs every boot (idempotent; no-op if no MITM CA).
+mkdir -p init-devimage-trust-proxy-ca/dependencies.d
+echo oneshot > init-devimage-trust-proxy-ca/type
+cat > init-devimage-trust-proxy-ca/up <<'UP'
+/etc/s6-overlay/s6-rc.d/init-devimage-trust-proxy-ca/run
+UP
+touch init-devimage-trust-proxy-ca/dependencies.d/init-services
+cat > init-devimage-trust-proxy-ca/run <<'RUN'
+#!/usr/bin/with-contenv bash
+exec /usr/local/bin/devimage-trust-proxy-ca
+RUN
+chmod 0755 init-devimage-trust-proxy-ca/run
+touch user/contents.d/init-devimage-trust-proxy-ca
+
+# Boot-time opt-in: DEVIMAGE_ENABLE_GUI=true starts the gui bundle at the
+# end of init. Implemented as a oneshot that drives s6-rc against the
+# live state once init-services has finished.
+mkdir -p init-devimage-gui-autostart/dependencies.d
+echo oneshot > init-devimage-gui-autostart/type
+cat > init-devimage-gui-autostart/up <<'UP'
+/etc/s6-overlay/s6-rc.d/init-devimage-gui-autostart/run
+UP
+touch init-devimage-gui-autostart/dependencies.d/init-devimage-config
+cat > init-devimage-gui-autostart/run <<'RUN'
+#!/usr/bin/with-contenv bash
+case "$(printf '%s' "${DEVIMAGE_ENABLE_GUI:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|y|on)
+        s6-rc -u change gui >/dev/null || true
+        ;;
+esac
+RUN
+chmod 0755 init-devimage-gui-autostart/run
+touch user/contents.d/init-devimage-gui-autostart
+EOF
+
+# WORKDIR after the abc user exists; /workspace itself is created at runtime
+# by init-devimage-config so its ownership tracks PUID/PGID.
+WORKDIR /workspace
