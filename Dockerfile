@@ -354,19 +354,24 @@ cat > init-devimage-config/run <<'RUN'
 #!/usr/bin/with-contenv bash
 set -euo pipefail
 
-# Seed /config from /defaults. Copy only entries that don't yet exist in
-# /config so user changes survive restarts (relevant when /config is a
-# named volume).
-shopt -s dotglob nullglob
-for entry in /defaults/*; do
-    name="${entry##*/}"
-    case "${name}" in
-        # LSIO baseimage defaults that init-selkies-config handles itself
-        autostart|autostart_wayland|default.conf|labwc.xml|menu.xml|menu_wayland.xml|startwm.sh|startwm_wayland.sh|pid)
-            continue ;;
-    esac
-    [ -e "/config/${name}" ] || cp -a "${entry}" "/config/${name}"
-done
+# Recursively seed /config from /defaults. --ignore-existing preserves any
+# file the user (or an earlier init) already wrote to /config and only
+# materializes the rest. The previous top-level "skip if /config/<name>
+# exists" check left deeply-nested seeds (Blender / FreeCAD addons under
+# .config/, .local/) stranded once LSIO's selkies init pre-created those
+# parent dirs.
+rsync -a --ignore-existing \
+    --exclude='/autostart' \
+    --exclude='/autostart_wayland' \
+    --exclude='/default.conf' \
+    --exclude='/labwc.xml' \
+    --exclude='/menu.xml' \
+    --exclude='/menu_wayland.xml' \
+    --exclude='/startwm.sh' \
+    --exclude='/startwm_wayland.sh' \
+    --exclude='/pid' \
+    --exclude='/native' \
+    /defaults/ /config/
 chown -R abc:abc /config 2>/dev/null || true
 
 install -d -o abc -g abc /workspace
