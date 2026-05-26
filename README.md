@@ -53,18 +53,17 @@ The default working directory is `/workspace` — that's where your bind-mounted
 DEVIMAGE_PASSWORD=changeme docker compose up
 ```
 
-The bundled [`compose.yml`](compose.yml) wires up the same mounts, ports, and GPU passthrough. Start the GUI later with `docker exec devimage devimage-gui start`, or uncomment `DEVIMAGE_ENABLE_GUI=true` in the compose file to start it at boot. The default `SELKIES_ENCODER` is `nvh264enc,x264enc,jpeg` (NVENC preferred, software fallback) — drop `gpus: all` and switch to `x264enc,jpeg` for CPU-only.
+The bundled [`compose.yml`](compose.yml) wires up the same mounts, ports, and GPU passthrough. Start the GUI later with `docker exec devimage devimage-gui start`, or uncomment `DEVIMAGE_ENABLE_GUI=true` in the compose file to start it at boot. Drop `gpus: all` for CPU-only hosts — Selkies' pixelflux pipeline auto-uses HW encoding when a GPU is present and falls back to CPU otherwise.
 
 ### Without an NVIDIA GPU
 
-Drop `--gpus all` and force a software encoder:
+Drop `--gpus all`. Selkies' pixelflux pipeline falls back to CPU encoding automatically; pass `-e SELKIES_USE_CPU=true` to force it explicitly.
 
 ```bash
 docker run --rm -it \
   -p 8080:3000 \
   -e CUSTOM_USER=ubuntu -e PASSWORD=changeme \
   -e PUID=1000 -e PGID=1000 -e TZ=UTC \
-  -e SELKIES_ENCODER=x264enc \
   -v "$PWD:/workspace" \
   ghcr.io/mtsmfm/devimage:latest
 ```

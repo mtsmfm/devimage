@@ -1,7 +1,9 @@
 # Run with: docker compose up
 #
-# Defaults assume an NVIDIA GPU (`gpus: all` + NVENC encoder). For a CPU-only
-# host: drop the `gpus: all` line and set SELKIES_ENCODER=x264enc.
+# Defaults assume an NVIDIA GPU (`gpus: all`). For a CPU-only host: drop the
+# `gpus: all` line. Selkies' pixelflux pipeline auto-uses HW encoding when a
+# GPU is present and falls back to CPU otherwise; set SELKIES_USE_CPU=true to
+# force CPU encoding explicitly.
 
 services:
   devimage:
@@ -18,10 +20,6 @@ services:
       PUID: "1000"
       PGID: "1000"
       TZ: "UTC"
-      # NVENC first, software fallbacks for graceful degradation if NVENC
-      # init fails (e.g. wrong driver, no /dev/nvidia0, WSL2 weirdness).
-      # Drop to "x264enc,jpeg" for CPU-only hosts.
-      SELKIES_ENCODER: "nvh264enc,x264enc,jpeg"
       # DEVIMAGE_ENABLE_GUI: "true"   # start Xvfb/openbox/Selkies at boot
       # On WSL2: route OpenGL through Mesa's d3d12 driver so Blender's
       # viewport (and other GL apps) reach the Windows GPU instead of falling
