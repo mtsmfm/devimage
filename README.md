@@ -143,6 +143,20 @@ mise use -g codex     # OpenAI Codex CLI
 
 Anything else with an `npm` / `pipx` / GitHub-Releases distribution works too: `mise` already provides Node / Python, so `npm i -g <agent>` or `pipx install <agent>` will land its binary on PATH.
 
+### Agent runtime skill
+
+This repo ships a reusable agent skill with devimage-specific pitfalls: throttle proxy networking, MITM TLS, WSL2 GPU/WebGPU, desktop startup, `mise`, `sudo`, `/config`, and `/workspace`.
+
+Install it explicitly with the open `skills` CLI:
+
+```bash
+mise exec node@lts -- npx -y skills add mtsmfm/devimage \
+  --skill devimage-runtime \
+  -g -a codex -a claude-code -y
+```
+
+This writes to the agent config under `/config` and does not create files in `/workspace`.
+
 ### MCP servers (Blender / FreeCAD)
 
 Both apps come with their MCP server (`/usr/local/bin/blender-mcp`, `/usr/local/bin/freecad-mcp`) and companion add-ons pre-installed:
