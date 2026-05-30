@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Launch Chrome with the flags needed for WebGPU on WSL2 through Mesa dzn.
+#
+# This wrapper does not force dzn for every Chrome process. Use it when you
+# specifically want browser WebGPU over /dev/dxg; normal Chrome remains useful
+# on native Linux GPU hosts.
+
+set -euo pipefail
+
+export LD_LIBRARY_PATH="/opt/mesa-dzn/lib/x86_64-linux-gnu:/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}"
+export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/opt/mesa-dzn/share/vulkan/icd.d/dzn_icd.x86_64.json}"
+export MESA_D3D12_DEFAULT_ADAPTER_NAME="${MESA_D3D12_DEFAULT_ADAPTER_NAME:-NVIDIA}"
+
+args=(
+  --enable-unsafe-webgpu
+  --enable-webgpu-developer-features
+  --ignore-gpu-blocklist
+  --force_high_performance_gpu
+  --use-gl=angle
+  --use-angle=vulkan
+  --enable-features=Vulkan,DefaultANGLEVulkan,VulkanFromANGLE,WebGPU,WebGPUDeveloperFeatures
+  --enable-dawn-features=allow_unsafe_apis,disable_adapter_blocklist
+  --disable-dawn-features=disallow_unsafe_apis
+  --enable-angle-features=exposeES32ForTesting
+)
+
+case "$(printf '%s' "${DEVIMAGE_CHROME_HEADLESS:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|y|on)
+    args+=(--headless=new --disable-vulkan-surface)
+    ;;
+esac
+
+case "$(printf '%s' "${DEVIMAGE_CHROME_IGNORE_CERT_ERRORS:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|y|on)
+    args+=(--ignore-certificate-errors)
+    ;;
+esac
+
+exec /usr/bin/google-chrome "${args[@]}" "$@"

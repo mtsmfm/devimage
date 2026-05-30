@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the throttle proxy's MITM CA into the system trust store so
-# apt / git / curl / pip / etc. verify HTTPS through the proxy. Run
+# apt / git / curl / pip / Chrome / etc. verify HTTPS through the proxy. Run
 # once per fresh devimage start when using compose.throttle.yml.
 #
 # Node-based CLIs (claude, codex) already pick up the CA via
@@ -21,3 +21,16 @@ fi
 sudo install -m 0644 "$src" "$dst"
 sudo update-ca-certificates >/dev/null
 echo "trusted: $dst"
+
+if command -v certutil >/dev/null 2>&1; then
+  nssdb=/config/.pki/nssdb
+  sudo install -d -o abc -g abc "$nssdb"
+  if [[ ! -f "$nssdb/cert9.db" ]]; then
+    sudo -u abc certutil -d "sql:$nssdb" -N --empty-password
+  fi
+  if sudo -u abc certutil -d "sql:$nssdb" -L -n devimage-throttle >/dev/null 2>&1; then
+    sudo -u abc certutil -d "sql:$nssdb" -D -n devimage-throttle
+  fi
+  sudo -u abc certutil -d "sql:$nssdb" -A -t "C,," -n devimage-throttle -i "$src"
+  echo "trusted: $nssdb devimage-throttle"
+fi

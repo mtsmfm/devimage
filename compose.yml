@@ -21,11 +21,12 @@ services:
       PGID: "1000"
       TZ: "UTC"
       # DEVIMAGE_ENABLE_GUI: "true"   # start Xvfb/openbox/Selkies at boot
-      # On WSL2: route OpenGL through Mesa's d3d12 driver so Blender's
-      # viewport (and other GL apps) reach the Windows GPU instead of falling
-      # back to llvmpipe. Pair with the /usr/lib/wsl mount below. See README.
-      # LD_LIBRARY_PATH: "/usr/lib/wsl/lib"
+      # On WSL2: route OpenGL through Mesa's d3d12 driver and browser WebGPU
+      # through the patched dzn Vulkan ICD baked into /opt/mesa-dzn. Pair with
+      # the /usr/lib/wsl mount below. See README.
+      # LD_LIBRARY_PATH: "/opt/mesa-dzn/lib/x86_64-linux-gnu:/usr/lib/wsl/lib"
       # GALLIUM_DRIVER: "d3d12"
+      # VK_DRIVER_FILES: "/opt/mesa-dzn/share/vulkan/icd.d/dzn_icd.x86_64.json"
       # MESA_D3D12_DEFAULT_ADAPTER_NAME: "NVIDIA"
     volumes:
       - "${PWD}/workspace:/workspace"

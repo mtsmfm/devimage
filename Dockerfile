@@ -8,6 +8,8 @@ ARG BLENDER_VERSION=4.2.20
 ARG BLENDER_MAJOR=4.2
 ARG BLENDER_SHA256=1f73f797d62be8aa2161f8c88a12f474cf23611592fa77b8fc003d60f0594a83
 ARG FREECAD_VERSION=1.1.1
+ARG MESA_DZN_VERSION=26.0.8
+ARG MESA_DZN_SHA256=caf1c0061a68e88dfa74967a7e780c0e85d65b6c4e334cd69095a5dc54ad78bc
 
 # ============================================================================
 # Parallel download stages
@@ -81,6 +83,77 @@ RUN curl -fsSL -o /out \
 FROM dl-base AS mise-fetch
 RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/out sh
 
+# Patched Mesa Dozen (dzn) Vulkan driver for WSL2 WebGPU.
+#
+# Chrome/Dawn rejects stock dzn before exposing it to navigator.gpu:
+# - Dawn requires fullDrawIndexUint32 for Vulkan adapters.
+# - Chromium's WebGPU adapter gate requires external-image support, which in
+#   Dawn's Vulkan backend includes exportable/importable external semaphores.
+# Stock dzn has the required FD import/export code, but does not advertise
+# binary semaphore capabilities through Mesa's vk_sync feature flags.
+FROM dl-base AS dzn-build
+ARG MESA_DZN_VERSION
+ARG MESA_DZN_SHA256
+RUN <<'EOF'
+set -euo pipefail
+
+apt-get update
+apt-get install -y --no-install-recommends \
+    build-essential bison flex pkg-config \
+    meson-1.7 ninja-build \
+    python3 python3-mako python3-ply python3-yaml \
+    glslang-tools spirv-tools directx-headers-dev \
+    libdrm-dev libudev-dev \
+    libwayland-dev wayland-protocols \
+    libx11-xcb-dev libxcb-dri3-dev libxcb-present-dev libxcb-randr0-dev \
+    libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev \
+    libxrandr-dev libxshmfence-dev libxxf86vm-dev
+
+curl -fsSL -o /tmp/mesa.tar.xz \
+    "https://archive.mesa3d.org/mesa-${MESA_DZN_VERSION}.tar.xz"
+echo "${MESA_DZN_SHA256}  /tmp/mesa.tar.xz" | sha256sum -c -
+mkdir -p /tmp/mesa-src
+tar -xJf /tmp/mesa.tar.xz -C /tmp/mesa-src --strip-components=1
+
+sed -i 's/\.fullDrawIndexUint32 = false,/.fullDrawIndexUint32 = true,/' \
+    /tmp/mesa-src/src/microsoft/vulkan/dzn_device.c
+grep -q '\.fullDrawIndexUint32 = true,' \
+    /tmp/mesa-src/src/microsoft/vulkan/dzn_device.c
+
+sed -i \
+    -e 's/(VK_SYNC_FEATURE_TIMELINE |/(VK_SYNC_FEATURE_BINARY |\n       VK_SYNC_FEATURE_TIMELINE |/' \
+    -e 's/VK_SYNC_FEATURE_GPU_WAIT |/VK_SYNC_FEATURE_GPU_WAIT |\n       VK_SYNC_FEATURE_GPU_MULTI_WAIT |/' \
+    -e 's/VK_SYNC_FEATURE_CPU_WAIT |/VK_SYNC_FEATURE_CPU_WAIT |\n       VK_SYNC_FEATURE_CPU_RESET |/' \
+    /tmp/mesa-src/src/microsoft/vulkan/dzn_sync.c
+grep -q 'VK_SYNC_FEATURE_BINARY' /tmp/mesa-src/src/microsoft/vulkan/dzn_sync.c
+grep -q 'VK_SYNC_FEATURE_GPU_MULTI_WAIT' /tmp/mesa-src/src/microsoft/vulkan/dzn_sync.c
+grep -q 'VK_SYNC_FEATURE_CPU_RESET' /tmp/mesa-src/src/microsoft/vulkan/dzn_sync.c
+
+meson setup /tmp/mesa-build /tmp/mesa-src \
+    --prefix=/opt/mesa-dzn \
+    --libdir=lib/x86_64-linux-gnu \
+    -Dbuildtype=release \
+    -Dplatforms=x11,wayland \
+    -Degl=disabled \
+    -Dgbm=disabled \
+    -Dglx=disabled \
+    -Dopengl=false \
+    '-Dgallium-drivers=[]' \
+    -Dvulkan-drivers=microsoft-experimental \
+    '-Dvulkan-layers=[]' \
+    '-Dtools=[]' \
+    '-Dvideo-codecs=[]' \
+    -Dllvm=disabled \
+    -Dshared-llvm=disabled \
+    -Dvalgrind=disabled \
+    -Dlibunwind=disabled \
+    -Dshader-cache=disabled \
+    -Dbuild-tests=false \
+    -Dselinux=false
+ninja -C /tmp/mesa-build -j"$(nproc)" install
+rm -rf /var/lib/apt/lists/* /tmp/mesa.tar.xz /tmp/mesa-src /tmp/mesa-build
+EOF
+
 # ============================================================================
 # Final image
 # ============================================================================
@@ -142,6 +215,11 @@ arch="$(dpkg --print-architecture)"
 echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
   > /etc/apt/sources.list.d/github-cli.list
 
+curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+  | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg
+echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+  > /etc/apt/sources.list.d/google-chrome.list
+
 # 32-bit Wine packages
 dpkg --add-architecture i386
 
@@ -163,6 +241,10 @@ apt_packages=(
 
     # GUI automation primitives beyond what LSIO ships
     wmctrl scrot
+
+    # Browser + WebGPU / Vulkan diagnostics
+    google-chrome-stable libnss3-tools libvulkan1 vulkan-tools mesa-utils
+    mesa-vulkan-drivers
 
     # File manager (LSIO's openbox baseimage ships only xterm)
     pcmanfm
@@ -223,6 +305,7 @@ RUN ln -s /opt/freecad/AppRun /usr/local/bin/freecad \
 
 COPY --from=winetricks-fetch --chmod=0755 /out /usr/local/bin/winetricks
 COPY --from=mise-fetch /out /usr/local/bin/mise
+COPY --from=dzn-build /opt/mesa-dzn /opt/mesa-dzn
 
 COPY --from=freecad-mcp-fetch /out \
       /defaults/.local/share/FreeCAD/Mod/FreeCADMCP
@@ -244,6 +327,7 @@ COPY --chmod=0755 scripts/devimage-gui /usr/local/bin/devimage-gui
 COPY --chmod=0755 scripts/devimage-mcp /usr/local/bin/devimage-mcp
 COPY --chmod=0755 scripts/devimage-claude /usr/local/bin/devimage-claude
 COPY --chmod=0755 scripts/devimage-codex /usr/local/bin/devimage-codex
+COPY --chmod=0755 scripts/devimage-chrome-webgpu /usr/local/bin/devimage-chrome-webgpu
 COPY --chmod=0755 scripts/devimage-trust-proxy-ca /usr/local/bin/devimage-trust-proxy-ca
 
 # MCP server CLIs (Python). pipx system-wide so /usr/local/bin/* is universal.
@@ -386,7 +470,7 @@ echo oneshot > init-devimage-trust-proxy-ca/type
 cat > init-devimage-trust-proxy-ca/up <<'UP'
 /etc/s6-overlay/s6-rc.d/init-devimage-trust-proxy-ca/run
 UP
-touch init-devimage-trust-proxy-ca/dependencies.d/init-services
+touch init-devimage-trust-proxy-ca/dependencies.d/init-devimage-config
 cat > init-devimage-trust-proxy-ca/run <<'RUN'
 #!/usr/bin/with-contenv bash
 exec /usr/local/bin/devimage-trust-proxy-ca
