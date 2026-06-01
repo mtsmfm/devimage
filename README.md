@@ -10,11 +10,11 @@ I want to let coding agents (Claude Code, etc.) loose on a real machine without 
 - **The tools agents reach for by default** — `git`, `gh`, `ripgrep`, `fd`, `jq`, build toolchain, Python, plus [`mise`](https://mise.jdx.dev/) for installing language runtimes on demand.
 - **GUI automation primitives** — `xdotool`, `wmctrl`, `scrot`, `xclip` so an agent can drive the desktop, take screenshots, and read the clipboard from the shell.
 - **Wine** (latest stable from WineHQ) for running Windows apps inside the desktop, with i386 multilib enabled so 32-bit installers work.
-- **3D / CAD MCP stack** — Blender 4.2 LTS and FreeCAD 1.1 (extracted from the upstream AppImage so the container doesn't need FUSE at runtime), plus the [Blender MCP](https://github.com/ahujasid/blender-mcp) and [FreeCAD MCP](https://github.com/neka-nat/freecad-mcp) servers and their companion add-ons. An agent can model in either app over MCP after a one-shot `devimage-mcp setup` call.
+- **3D / CAD MCP stack** — Blender 5.1 and FreeCAD 1.1 (extracted from the upstream AppImage so the container doesn't need FUSE at runtime), plus the [Blender MCP](https://github.com/ahujasid/blender-mcp) and [FreeCAD MCP](https://github.com/neka-nat/freecad-mcp) servers and their companion add-ons. An agent can model in either app over MCP after a one-shot `devimage-mcp setup` call.
 - **`zsh` + oh-my-zsh** as the default shell for the `abc` user. `bash` still works if you prefer it.
 - **Free movement inside the box** — the `abc` user has passwordless `sudo`, and `mise` shims survive the `sudo` boundary, so the agent can `apt install` or `mise use node@lts` without ceremony.
 
-Blender 4.2 LTS specifically (rather than the current 5.x) because that version's `bpy` API has the most stable AI training data — newer releases tend to produce hallucinated API calls.
+Blender is pinned to the latest stable 5.x corrective release available from blender.org.
 
 ## Usage
 
@@ -130,7 +130,7 @@ Anything else with an `npm` / `pipx` / GitHub-Releases distribution works too: `
 
 Both apps come with their MCP server (`/usr/local/bin/blender-mcp`, `/usr/local/bin/freecad-mcp`) and companion add-ons pre-installed:
 
-- Blender: `~/.config/blender/4.2/scripts/addons/blender_mcp.py` — pre-enabled in `userpref.blend` (seeded into `/config` on first container boot).
+- Blender: `~/.config/blender/5.1/scripts/addons/blender_mcp.py` — pre-enabled in `userpref.blend` (seeded into `/config` on first container boot).
 - FreeCAD: `~/.local/share/FreeCAD/Mod/FreeCADMCP/` — auto-loaded on FreeCAD start.
 
 After installing an agent, run:

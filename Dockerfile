@@ -4,9 +4,9 @@
 # Built on linuxserver.io's baseimage-selkies (openbox/labwc + Ubuntu 24.04),
 # which tracks Selkies HEAD with PixelFlux WebSocket pixel streaming.
 
-ARG BLENDER_VERSION=4.2.20
-ARG BLENDER_MAJOR=4.2
-ARG BLENDER_SHA256=1f73f797d62be8aa2161f8c88a12f474cf23611592fa77b8fc003d60f0594a83
+ARG BLENDER_VERSION=5.1.2
+ARG BLENDER_MAJOR=5.1
+ARG BLENDER_SHA256=aaccb355f50183979b698bcce7467103a76261b5fa59f4972295842662a285fb
 ARG FREECAD_VERSION=1.1.1
 
 # ============================================================================
@@ -34,9 +34,7 @@ RUN sed -i -E \
         curl ca-certificates xz-utils \
  && rm -rf /var/lib/apt/lists/*
 
-# Blender 4.2 LTS. We pin to 4.2 rather than the current 5.x because that
-# version's bpy API has the most stable AI training data — newer releases
-# produce hallucinated calls.
+# Blender 5.x stable, pinned to the latest corrective release.
 FROM dl-base AS blender-fetch
 ARG BLENDER_VERSION
 ARG BLENDER_MAJOR
@@ -49,7 +47,7 @@ RUN curl -fsSL -o /tmp/blender.tar.xz \
  && rm /tmp/blender.tar.xz
 
 # Blender MCP add-on (single .py file). Goes into the user's BLENDER_USER_SCRIPTS
-# at runtime — Blender 4.2 no longer auto-scans <install>/<version>/scripts/addons/,
+# at runtime — Blender no longer auto-scans <install>/<version>/scripts/addons/,
 # only addons_core/ (bundled) and the per-user scripts dir.
 FROM dl-base AS blender-mcp-fetch
 RUN curl -fsSL -o /out \
@@ -179,7 +177,7 @@ apt_packages=(
     # pip + pipx for the MCP server CLIs below
     python3-pip pipx
 
-    # Blender 4.2 runtime libs (its tarball is otherwise self-contained)
+    # Blender runtime libs (its tarball is otherwise self-contained)
     libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0
     libsm6 libgl1 libegl1 libgomp1 libdbus-1-3
 
@@ -209,7 +207,7 @@ RUN ln -s /opt/blender/blender /usr/local/bin/blender \
  && update-desktop-database /usr/share/applications
 
 # Add-ons under /defaults get copied to /config on first boot by
-# init-devimage-config. Blender 4.2 only auto-scans the per-user scripts dir
+# init-devimage-config. Blender only auto-scans the per-user scripts dir
 # for legacy add-ons, so the path must be inside $HOME at runtime.
 COPY --from=blender-mcp-fetch /out \
       /defaults/.config/blender/${BLENDER_MAJOR}/scripts/addons/blender_mcp.py
