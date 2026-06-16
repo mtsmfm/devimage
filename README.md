@@ -18,22 +18,19 @@ Blender is pinned to the latest stable 5.x corrective release available from ble
 
 ## Usage
 
-Pull and run:
+Use Docker Compose:
 
 ```bash
-docker run --rm -it \
-  --name devimage \
-  --gpus all \
-  -p 8080:3000 \
-  -e CUSTOM_USER=ubuntu \
-  -e PASSWORD=changeme \
-  -e PUID=1000 -e PGID=1000 -e TZ=UTC \
-  -v "$PWD:/workspace" \
-  -v "$HOME/.claude:/config/.claude" \
-  -v "$HOME/.claude.json:/config/.claude.json" \
-  -v "$HOME/.codex:/config/.codex" \
-  ghcr.io/mtsmfm/devimage:latest
+DEVIMAGE_PASSWORD=changeme docker compose up
 ```
+
+The bundled [`compose.yml`](compose.yml) starts three services:
+
+- `devimage` — the desktop and agent environment.
+- `throttle` — a mitmproxy sidecar for outbound HTTP/HTTPS rate limiting and blocklisting.
+- `ingress` — a HAProxy sidecar that publishes Selkies on host `:8080` and ad-hoc dev services on `:18000-18009`.
+
+The image expects the `throttle` hostname at runtime, so the compose stack is the supported entry point.
 
 The desktop stack is off by default. Start it only when a task needs GUI access:
 
@@ -47,26 +44,11 @@ Use `devimage-gui status` to inspect which GUI services are up, and `devimage-gu
 
 The default working directory is `/workspace` — that's where your bind-mounted repo will be, and where `docker exec ... <cmd>` lands too. `HOME` inside the container is `/config` (linuxserver.io convention); the `~/.claude` and `~/.codex` mounts persist agent login state across runs. Drop them if you don't need it.
 
-### Or via Docker Compose
-
-```bash
-DEVIMAGE_PASSWORD=changeme docker compose up
-```
-
-The bundled [`compose.yml`](compose.yml) wires up the same mounts, ports, and GPU passthrough. Start the GUI later with `docker exec devimage devimage-gui start`, or uncomment `DEVIMAGE_ENABLE_GUI=true` in the compose file to start it at boot. Drop `gpus: all` for CPU-only hosts — Selkies' pixelflux pipeline auto-uses HW encoding when a GPU is present and falls back to CPU otherwise.
+Start the GUI later with `docker exec devimage devimage-gui start`, or uncomment `DEVIMAGE_ENABLE_GUI=true` in the compose file to start it at boot. Drop `gpus: all` for CPU-only hosts — Selkies' pixelflux pipeline auto-uses HW encoding when a GPU is present and falls back to CPU otherwise.
 
 ### Without an NVIDIA GPU
 
-Drop `--gpus all`. Selkies' pixelflux pipeline falls back to CPU encoding automatically; pass `-e SELKIES_USE_CPU=true` to force it explicitly.
-
-```bash
-docker run --rm -it \
-  -p 8080:3000 \
-  -e CUSTOM_USER=ubuntu -e PASSWORD=changeme \
-  -e PUID=1000 -e PGID=1000 -e TZ=UTC \
-  -v "$PWD:/workspace" \
-  ghcr.io/mtsmfm/devimage:latest
-```
+Drop `gpus: all` from [`compose.yml`](compose.yml). Selkies' pixelflux pipeline falls back to CPU encoding automatically; set `SELKIES_USE_CPU=true` to force it explicitly.
 
 ### On WSL2 (NVIDIA GPU)
 
@@ -89,19 +71,13 @@ The architecture this leans on (WSL GPU paravirtualization via `/dev/dxg`, Mesa'
 
 ### Outbound throttle (DoS guardrails)
 
-A coding agent that goes haywire can hammer an API thousands of times per second before you notice. To cap that, run with the bundled overlay:
-
-```bash
-docker compose -f compose.yml -f compose.throttle.yml up
-```
-
-What the overlay does:
+A coding agent that goes haywire can hammer an API thousands of times per second before you notice. The bundled compose stack always routes devimage outbound traffic through the throttle sidecar:
 
 - Stands up a `mitmproxy` sidecar that loads [`proxy/throttle.py`](proxy/throttle.py) — a per-host sliding-window token bucket. Default: `600 req / 5 min` per host (≈ 2 req/s sustained, room for short bursts), with looser caps for package registries (`registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`) so `npm install` / `pip install` don't get clipped. Over-limit requests **sleep** rather than 429 — silently backpressures even agents that retry blindly.
 - Reattaches `devimage` to a Docker network with `internal: true` — no default route, no NAT, no way out. The proxy sits on the same bridge, so `HTTPS_PROXY` traffic goes intra-bridge to it and reaches the internet via the proxy's own egress leg. **Fail-closed**: an agent that ignores `HTTPS_PROXY` has no kernel route off-box and its requests just hang/error.
 - Adds an `ingress` sidecar (`haproxy:lts-alpine`, config at [`proxy/haproxy.cfg`](proxy/haproxy.cfg)) that publishes host `:8080` (Selkies HTTP/WebSocket, forwarded to `devimage:3000`) plus a `:18000-18009` block for ad-hoc dev services. The dev-port range works because HAProxy preserves `dst_port` automatically when the `server` line omits a port, so `localhost:18003` lands on `devimage:18003` with no compose edits. Needed because Docker silently suppresses port publishing on `internal: true` containers.
-- Sets `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` in `devimage`, plus `NODE_EXTRA_CA_CERTS` so Node-based CLIs (claude, codex) trust the MITM CA without setup, and `NODE_USE_ENV_PROXY=1` so Node 24+ built-in `fetch` honors `*_PROXY`.
-- A boot-time s6 oneshot ([`devimage-trust-proxy-ca`](scripts/devimage-trust-proxy-ca)) installs the MITM CA into the system trust store, so apt / git / curl / pip transparently verify HTTPS through the proxy. No-op when the throttle overlay isn't in use; the script is also runnable manually for debugging.
+- Bakes `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, apt proxy config, `NODE_EXTRA_CA_CERTS`, and `NODE_USE_ENV_PROXY=1` into the devimage image so `sudo apt install` and Node 24+ built-in `fetch` use the proxy without runtime wiring.
+- A boot-time s6 oneshot installs the MITM CA into the system trust store. Git / curl / pip transparently verify HTTPS through the proxy via the system trust store.
 - Points the proxy's own resolver at [Quad9](https://www.quad9.net/) (`9.9.9.9`) so known-malicious domains get filtered at name-resolve time, before the addon's blocklist sees them.
 - The addon also fetches the [URLhaus](https://urlhaus.abuse.ch/) malware host list on startup and refreshes every 6h; matching hosts get a 403. Add more sources (e.g. [OISD](https://oisd.nl/), [Steven Black hosts](https://github.com/StevenBlack/hosts)) by appending to `BLOCKLIST_SOURCES` in [`proxy/throttle.py`](proxy/throttle.py).
 

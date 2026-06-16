@@ -6,11 +6,53 @@
 # force CPU encoding explicitly.
 
 services:
+  throttle:
+    image: mitmproxy/mitmproxy:latest
+    container_name: devimage-throttle
+    command: >
+      mitmdump
+      --mode regular
+      --listen-host 0.0.0.0
+      --listen-port 8080
+      --set stream_large_bodies=1m
+      -s /opt/throttle.py
+    volumes:
+      - ./proxy/throttle.py:/opt/throttle.py:ro
+      - mitm-ca:/home/mitmproxy/.mitmproxy
+    networks:
+      egress:
+        priority: 1
+      isolated: {}
+    restart: unless-stopped
+    dns:
+      - 9.9.9.9
+      - 149.112.112.112
+    healthcheck:
+      test: ["CMD", "test", "-f", "/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem"]
+      interval: 1s
+      timeout: 1s
+      retries: 60
+
+  ingress:
+    image: haproxy:lts-alpine
+    container_name: devimage-ingress
+    volumes:
+      - ./proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [isolated, ingress]
+    ports:
+      - "8080:8080"
+      - "18000-18009:18000-18009"
+    depends_on:
+      - devimage
+    restart: unless-stopped
+
   devimage:
     image: ghcr.io/mtsmfm/devimage:latest
     container_name: devimage
-    ports:
-      - "8080:3000"
+    networks: [isolated]
+    depends_on:
+      throttle:
+        condition: service_healthy
     environment:
       # LSIO baseimage convention: omit PASSWORD to disable HTTP basic auth.
       CUSTOM_USER: "ubuntu"
@@ -29,6 +71,7 @@ services:
       # MESA_D3D12_DEFAULT_ADAPTER_NAME: "NVIDIA"
     volumes:
       - "${PWD}/workspace:/workspace"
+      - mitm-ca:/mnt/mitm-ca:ro
       # HOME inside the container is /config (LSIO convention), so agent
       # credentials land under /config/.<tool>.
       - "${HOME}/.claude:/config/.claude"
@@ -41,3 +84,12 @@ services:
     shm_size: "1gb"
     # NVIDIA GPU passthrough; drop this line for CPU-only.
     gpus: all
+
+networks:
+  egress: {}
+  ingress: {}
+  isolated:
+    internal: true
+
+volumes:
+  mitm-ca:

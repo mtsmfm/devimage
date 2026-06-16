@@ -1,6 +1,6 @@
 """Per-host outbound rate limiting + malware blocklist for devimage.
 
-Loaded by mitmproxy in the throttle service (compose.throttle.yml).
+Loaded by mitmproxy in the throttle service (compose.yml).
 
 - Sliding-window rate limit per destination host. Over-limit requests
   sleep instead of erroring, so well-behaved agents naturally

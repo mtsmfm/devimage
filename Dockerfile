@@ -242,7 +242,6 @@ COPY --chmod=0755 scripts/devimage-gui /usr/local/bin/devimage-gui
 COPY --chmod=0755 scripts/devimage-mcp /usr/local/bin/devimage-mcp
 COPY --chmod=0755 scripts/devimage-claude /usr/local/bin/devimage-claude
 COPY --chmod=0755 scripts/devimage-codex /usr/local/bin/devimage-codex
-COPY --chmod=0755 scripts/devimage-trust-proxy-ca /usr/local/bin/devimage-trust-proxy-ca
 
 # MCP server CLIs (Python). pipx system-wide so /usr/local/bin/* is universal.
 RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install blender-mcp \
@@ -378,7 +377,7 @@ chmod 0755 init-devimage-config/run
 
 touch user/contents.d/init-devimage-config
 
-# devimage-trust-proxy-ca runs every boot (idempotent; no-op if no MITM CA).
+# Trust the throttle sidecar's generated MITM CA every boot.
 mkdir -p init-devimage-trust-proxy-ca/dependencies.d
 echo oneshot > init-devimage-trust-proxy-ca/type
 cat > init-devimage-trust-proxy-ca/up <<'UP'
@@ -387,7 +386,19 @@ UP
 touch init-devimage-trust-proxy-ca/dependencies.d/init-services
 cat > init-devimage-trust-proxy-ca/run <<'RUN'
 #!/usr/bin/with-contenv bash
-exec /usr/local/bin/devimage-trust-proxy-ca
+set -euo pipefail
+
+src=/mnt/mitm-ca/mitmproxy-ca-cert.pem
+dst=/usr/local/share/ca-certificates/devimage-throttle.crt
+
+if [[ ! -r "$src" ]]; then
+    echo "devimage: $src not present, nothing to trust"
+    exit 0
+fi
+
+install -m 0644 "$src" "$dst"
+update-ca-certificates >/dev/null
+echo "trusted: $dst"
 RUN
 chmod 0755 init-devimage-trust-proxy-ca/run
 touch user/contents.d/init-devimage-trust-proxy-ca
@@ -412,6 +423,26 @@ RUN
 chmod 0755 init-devimage-gui-autostart/run
 touch user/contents.d/init-devimage-gui-autostart
 EOF
+
+# Runtime networking is intentionally routed through the always-on throttle
+# sidecar from compose.yml. Bake the defaults into the image so sudo and apt
+# do not depend on inheriting proxy environment variables from the caller.
+ENV HTTP_PROXY=http://throttle:8080 \
+    HTTPS_PROXY=http://throttle:8080 \
+    NO_PROXY=localhost,127.0.0.1,::1 \
+    http_proxy=http://throttle:8080 \
+    https_proxy=http://throttle:8080 \
+    no_proxy=localhost,127.0.0.1,::1 \
+    NODE_USE_ENV_PROXY=1 \
+    NODE_EXTRA_CA_CERTS=/mnt/mitm-ca/mitmproxy-ca-cert.pem \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
+RUN printf '%s\n' \
+      'Acquire::http::Proxy "http://throttle:8080";' \
+      'Acquire::https::Proxy "http://throttle:8080";' \
+      > /etc/apt/apt.conf.d/90-devimage-proxy
 
 # WORKDIR after the abc user exists; /workspace itself is created at runtime
 # by init-devimage-config so its ownership tracks PUID/PGID.
